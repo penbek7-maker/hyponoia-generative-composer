@@ -1,0 +1,36 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Composer audio memory - keep folder, ignore personal samples
+alpha_memory/*
+!alpha_memory/.gitkeep
+
+# Generated audio
+output/
+recording/
+*.wav
+
+# Generated learning and reports
+render_report.json
+render_reports/
+critic_reports/
+human_feedback/
+sample_learning_profile.json
+learning_profile.json
+
+# Generated memory index
+memory_index_v3.json
+
+# Old development files and backups
+Generators old/
+backups/
+generator_receiver_OLD.py
+*.save
+memory.py
+memory_builder.py
+memory_builder_v2.py
+memory_index.json
+memory_index_v2.json
