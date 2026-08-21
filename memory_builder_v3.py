@@ -9,14 +9,20 @@ import math
 import librosa
 import numpy as np
 
+from hyponoia_stability import (
+    TARGET_SR,
+    atomic_write_json,
+    stable_object_id,
+    stable_recording_id,
+    utc_timestamp,
+)
+
 MEMORY_FOLDER = "alpha_memory"
 OUTPUT_FILE = "memory_index_v3.json"
+REPORT_FILE = "memory_build_report.json"
 
 MIN_OBJECT = 0.7
 MAX_OBJECT = 15.0
-TARGET_SR = 44100
-
-
 def clamp(x, lo=0.0, hi=1.0):
     return float(max(lo, min(hi, x)))
 
@@ -285,6 +291,14 @@ def analyse_object(audio, sr):
     background_probability = clamp(ambient_score * 0.45 + resonance_strength * 0.35 + (1.0 - transient_score) * 0.20)
     contrast_score = clamp(abs(brightness - 2500.0) / 9000.0 * 0.35 + gesture_strength * 0.30 + spectral_width * 0.35)
     novelty = clamp(richness * 0.45 + spectral_width * 0.25 + pitch_motion * 0.20 + transient_score * 0.10)
+    # A transparent, weak heuristic used only for the deterministic
+    # "more synthesizers" MVP intent.  It is not a source classifier.
+    synthetic_score = clamp(
+        harmonicity * 0.38
+        + pitch_confidence * 0.24
+        + resonance_strength * 0.18
+        + (1.0 - min(1.0, noise * 24.0)) * 0.20
+    )
 
     register = register_from_pitch_or_brightness(pitch_midi, brightness)
     gesture_type = gesture_type_from_features(duration, energy, brightness, noise, attack, harmonicity, pitch_confidence, tail_length)
@@ -344,6 +358,7 @@ def analyse_object(audio, sr):
         "foreground_probability": float(foreground_probability),
         "background_probability": float(background_probability),
         "contrast_score": float(contrast_score),
+        "synthetic_score": float(synthetic_score),
 
         # Learning descriptors, initial values. Critic will update these later.
         "critic_score": 0.5,
@@ -356,6 +371,7 @@ def analyse_object(audio, sr):
 def build_memory():
     memory = []
     total_objects = 0
+    failures = []
 
     files = sorted(os.listdir(MEMORY_FOLDER))
 
@@ -366,11 +382,21 @@ def build_memory():
         path = os.path.join(MEMORY_FOLDER, filename)
         print("Analysing:", filename)
 
-        audio, sr = load_audio(path)
-        objects = detect_sound_objects(audio, sr)
+        try:
+            audio, sr = load_audio(path)
+            objects = detect_sound_objects(audio, sr)
+        except Exception as exc:
+            failures.append({"recording": filename, "error": f"{type(exc).__name__}: {exc}"})
+            print("Failed:", filename, failures[-1]["error"])
+            continue
+
+        recording_id = stable_recording_id(audio, sr)
 
         recording = {
+            "schema_version": 2,
             "recording": filename,
+            "recording_id": recording_id,
+            "sample_rate": int(sr),
             "duration": len(audio) / sr,
             "objects": []
         }
@@ -383,10 +409,15 @@ def build_memory():
 
             features = analyse_object(fragment, sr)
 
+            object_id = stable_object_id(fragment, sr)
             recording["objects"].append({
-                "id": idx,
+                "id": object_id,
+                "stable_id": object_id,
+                "legacy_id": idx,
                 "start": float(start),
                 "end": float(end),
+                "start_sample": int(round(start * sr)),
+                "end_sample": int(round(end * sr)),
                 "duration": float(end - start),
                 "features": features,
                 "times_used": 0
@@ -395,11 +426,23 @@ def build_memory():
         total_objects += len(recording["objects"])
         memory.append(recording)
 
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(memory, f, indent=4)
+    atomic_write_json(OUTPUT_FILE, memory)
+    report = {
+        "schema_version": 1,
+        "timestamp": utc_timestamp(),
+        "target_sample_rate": TARGET_SR,
+        "memory_folder": MEMORY_FOLDER,
+        "output_file": OUTPUT_FILE,
+        "recordings": len(memory),
+        "sound_objects": total_objects,
+        "failed_recordings": failures,
+        "stable_id_scheme": "sha256(canonical mono float32 audio at 48 kHz)",
+    }
+    atomic_write_json(REPORT_FILE, report)
 
     print()
     print("Saved:", OUTPUT_FILE)
+    print("Build report:", REPORT_FILE)
     print("Recordings:", len(memory))
     print("Sound objects:", total_objects)
     print("Memory v3 descriptors: pitch, register, harmonicity, musicality, richness, phrase roles, learning fields")

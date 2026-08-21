@@ -20,6 +20,12 @@ critic_reports/
 human_feedback/
 sample_learning_profile.json
 learning_profile.json
+memory_build_report.json
+critic_calibration_report.json
+reports/critic_v2_1_reanalysis/
+reports/critic_v2_1_paired/
+reports/critic_calibration_v2_1_existing_pairs.json
+reports/critic_recalibration_v2_1_summary.json
 
 # Generated memory index
 memory_index_v3.json

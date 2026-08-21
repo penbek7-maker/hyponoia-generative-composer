@@ -3,12 +3,22 @@
 import os
 import json
 import random
+from functools import lru_cache
 from datetime import datetime
 
 import librosa
 import soundfile as sf
 import numpy as np
 from scipy.signal import butter, lfilter
+
+from hyponoia_stability import (
+    TARGET_SR,
+    atomic_write_json,
+    deterministic_group,
+    migrate_sample_profile,
+    sample_key as stable_sample_key,
+    utc_timestamp,
+)
 
 MEMORY_FILE = "memory_index_v3.json"
 MEMORY_FOLDER = "alpha_memory"
@@ -18,6 +28,14 @@ LEARNING_FILE = "learning_profile.json"
 SAMPLE_LEARNING_FILE = "sample_learning_profile.json"
 RENDER_REPORT_FILE = "render_report.json"
 RENDER_REPORT_FOLDER = "render_reports"
+GENERATOR_REVISION = "2026-08-21-d5-aesthetic-bridge-5.1"
+
+D5_REFERENCE_TARGETS = {
+    "pulse_bpm_range": [122.0, 129.0],
+    "target_integrated_lufs": -17.4,
+    "max_abrupt_drop_rate_per_minute": 0.5,
+    "design": "continuous transformations, developed synthetic material, no hard phrase cuts",
+}
 
 DEFAULT_LEARNING_WEIGHTS = {
     "musicality_weight": 1.0,
@@ -29,6 +47,11 @@ DEFAULT_LEARNING_WEIGHTS = {
     "gesture_weight": 1.0,
     "noise_penalty": 1.0,
     "impact_penalty": 1.0,
+    "exploration_weight": 1.0,
+    "repetition_control": 1.0,
+    "synthetic_material_weight": 1.0,
+    "activity_weight": 1.0,
+    "material_development_weight": 1.0,
 }
 
 LEARNING_WEIGHTS = dict(DEFAULT_LEARNING_WEIGHTS)
@@ -156,12 +179,10 @@ def scale_frequencies(low_midi=48, high_midi=96, count=10):
     return [midi_to_hz(notes[i]) for i in indices]
 
 OUTPUT_DURATION = 180
-TARGET_SR = 44100
-
 # Material-plan sizes: D1 / D3 / D5
-CORE_COUNT = 10
-EXTRA_D3_COUNT = 8
-EXTRA_D5_COUNT = 20
+CORE_COUNT = 6
+EXTRA_D3_COUNT = 4
+EXTRA_D5_COUNT = 6
 
 # IMPORTANT: every render should be different.
 # We explicitly seed from current time + process id, so each run produces a new variation.
@@ -176,16 +197,18 @@ def load_profile():
 
 
 
-def load_learning_weights():
-    """Load learned preferences safely; missing or malformed values fall back to 1.0."""
+def load_learning_weights(dream_level=None):
+    """Combine shared rating controls with only the active D-level text profile."""
     weights = dict(DEFAULT_LEARNING_WEIGHTS)
     try:
         with open(LEARNING_FILE, "r") as f:
             data = json.load(f)
         incoming = data.get("weights", {})
+        level_name = f"D{int(dream_level)}" if dream_level in (1, 3, 5) else None
+        level_incoming = data.get("level_weights", {}).get(level_name, {}) if level_name else {}
         for key in weights:
-            value = incoming.get(key, 1.0)
             try:
+                value = float(incoming.get(key, 1.0)) + float(level_incoming.get(key, 1.0)) - 1.0
                 weights[key] = float(max(0.5, min(1.8, float(value))))
             except (TypeError, ValueError):
                 pass
@@ -207,16 +230,169 @@ def learned_factor(name, sensitivity=5.0, lo=0.65, hi=1.45):
     return max(lo, min(hi, factor))
 
 
+def dream_activity_multiplier(dream_level):
+    """Keep D-level activity audibly ordered without turning D5 into clutter."""
+    base = {1: 0.96, 3: 1.04, 5: 1.10}[dream_level]
+    if dream_level == 5:
+        # D5 energy now comes primarily from internal motion and phrase rhythm,
+        # not from accumulating an ever larger number of unrelated layers.
+        return 1.06 * learned_factor("activity_weight", 1.3, 0.92, 1.16)
+    return base * learned_factor("activity_weight", 3.0, 0.88, 1.22)
+
+
+def d5_energy_drive(dream_level):
+    """Bounded D5 drive from explicit activity and musicality preferences."""
+    if dream_level != 5:
+        return 1.0
+    activity = learned_factor("activity_weight", 3.0, 0.90, 1.30)
+    musicality = learned_factor("musicality_weight", 3.0, 0.92, 1.20)
+    return float(np.sqrt(activity * musicality))
+
+
+def d5_temporal_profile(dream_level):
+    """Translate D5 activity learning into audible speed, not only more layers.
+
+    D1 and D3 deliberately return a neutral profile. For D5, the learned
+    activity control shortens time-stretch ratios, emergence envelopes and
+    delay spacing while slightly reducing the slow ambient wash.
+    """
+    if dream_level != 5:
+        return {
+            "temporal_drive": 1.0,
+            "stretch_scale": 1.0,
+            "envelope_scale": 1.0,
+            "delay_scale": 1.0,
+            "ambient_scale": 1.0,
+        }
+
+    # The preferred 20-August render breathed more freely than the later
+    # pulse-driven revisions. Activity therefore creates gentle forward motion
+    # without shortening phrases or stripping away the ambient body.
+    activity = learned_factor("activity_weight", 0.65, 0.96, 1.32)
+    temporal_drive = float(max(1.04, min(1.34, 1.03 * activity)))
+    return {
+        "temporal_drive": temporal_drive,
+        "stretch_scale": max(0.94, 1.0 - 0.12 * (temporal_drive - 1.0)),
+        "envelope_scale": max(0.96, 1.0 - 0.08 * (temporal_drive - 1.0)),
+        "delay_scale": max(0.84, 1.0 - 0.28 * (temporal_drive - 1.0)),
+        "ambient_scale": max(0.94, 1.0 - 0.16 * (temporal_drive - 1.0)),
+    }
+
+
+def d5_development_drive(dream_level):
+    """Bounded development strength for transformations of the chosen palette."""
+    if dream_level != 5:
+        return 1.0
+    development = learned_factor("material_development_weight", 2.4, 0.92, 1.42)
+    synthetic = learned_factor("synthetic_material_weight", 1.4, 0.94, 1.25)
+    return float(np.sqrt(development * synthetic))
+
+
+def d5_soft_grid_start(base_position, section_start, role, dream_level, pulse_bpm):
+    """Pull D5 entries gently toward one shared pulse without hard quantisation."""
+    if dream_level != 5:
+        return float(base_position)
+    beat = 60.0 / max(1.0, float(pulse_bpm))
+    if role in ["gesture", "impact", "noise"]:
+        subdivision, strength = beat / 2.0, 0.26
+    elif role == "texture":
+        subdivision, strength = beat, 0.12
+    else:
+        subdivision, strength = beat * 2.0, 0.08
+    relative = float(base_position) - float(section_start)
+    nearest = float(section_start) + round(relative / subdivision) * subdivision
+    return float(base_position + (nearest - base_position) * strength)
+
+
+def d5_continuity_start(start, duration, role, previous_role_end, dream_level, pulse_bpm):
+    """Prevent isolated D5 lane entries and preserve overlap between related roles."""
+    if dream_level != 5 or previous_role_end is None:
+        return float(start)
+    beat = 60.0 / max(1.0, float(pulse_bpm))
+    max_gap_beats = {
+        "gesture": 2.0,
+        "impact": 2.5,
+        "noise": 3.0,
+        "texture": 1.0,
+        "resonance": 1.0,
+    }
+    overlap = {
+        "gesture": 0.18,
+        "impact": 0.12,
+        "noise": 0.30,
+        "texture": 1.40,
+        "resonance": 2.40,
+    }
+    latest_with_continuity = float(previous_role_end) + max_gap_beats.get(role, 2.0) * beat
+    adjusted = float(start)
+    if adjusted > latest_with_continuity:
+        # Pull a large gap only part-way back. The old aesthetic depended on
+        # elastic spacing, while the edge guard already protects phrase endings.
+        adjusted -= (adjusted - latest_with_continuity) * 0.42
+    if (
+        role in ["texture", "resonance"]
+        and 0.0 < adjusted - float(previous_role_end) < 0.75
+    ):
+        adjusted = float(previous_role_end) - min(
+            overlap[role] * 0.45,
+            max(0.1, float(duration) * 0.10),
+        )
+    return max(0.0, adjusted)
+
+
+def form_density_multiplier(section_name, dream_level):
+    """Create one of three audibly different D5 energy arcs per render."""
+    if dream_level != 5:
+        return 1.0
+    variant = D5_FORM_VARIANTS.get(CURRENT_FORM_VARIANT, {})
+    base = float(variant.get(section_name, 1.0))
+    drive = d5_energy_drive(dream_level)
+    if base >= 1.0:
+        return 1.0 + (base - 1.0) * drive
+    return base
+
+
+def d5_selection_character_factor(obj, dream_level):
+    """Prefer energetic, musical, synthetic material only when rendering D5."""
+    if dream_level != 5:
+        return 1.0
+    features = obj.get("features", {})
+    energy = max(0.0, min(1.0, float(features.get("energy", 0.0)) / 0.16))
+    musicality = max(0.0, min(1.0, float(features.get("musicality", 0.5))))
+    gesture = max(0.0, min(1.0, float(features.get("gesture_strength", 0.5))))
+    synthetic = max(0.0, min(1.0, float(features.get("synthetic_score", 0.5))))
+    energetic_quality = 0.40 * musicality + 0.34 * gesture + 0.26 * energy
+    drive = d5_energy_drive(dream_level)
+    synthetic_drive = learned_factor("synthetic_material_weight", 4.0, 0.85, 1.50)
+    energetic_factor = 1.16 - 0.24 * energetic_quality * drive
+    synthetic_factor = 1.12 - 0.20 * synthetic * synthetic_drive
+    focused = max(0.52, energetic_factor * synthetic_factor)
+    # Keep some present-day preference for musical synthetic material, but
+    # retain the broader, airier palette of the listener-preferred baseline.
+    return float(1.0 + (focused - 1.0) * 0.55)
+
+
+def material_plan_limits(dream_level):
+    """Balanced per-render palette: focused, but never reduced to a tiny loop."""
+    recording_base = {1: 6, 3: 10, 5: 16}[dream_level]
+    object_base = {1: 12, 3: 20, 5: 30}[dream_level]
+    focus = learned_factor("material_development_weight", 1.2, 0.88, 1.18)
+    recordings = max(3, int(round(recording_base / focus)))
+    objects = max(recordings, int(round(object_base / focus)))
+    return recordings, objects
+
+
 def sample_key(obj):
     """Stable identifier for one analysed object inside one source recording."""
-    return f"{obj['recording']}::{obj['id']}"
+    return stable_sample_key(str(obj["recording_id"]), str(obj["object_id"]))
 
 
-def load_sample_learning_profile():
+def load_sample_learning_profile(memory):
     """Load persistent sample-level preferences without changing global learning weights."""
     default = {
-        "version": 1,
-        "description": "Hyponoia sample-level learning profile.",
+        "version": 2,
+        "generator_revision": GENERATOR_REVISION,
+        "description": "Hyponoia sample-level learning profile with stable content IDs.",
         "total_render_selections": 0,
         "samples": {},
     }
@@ -231,15 +407,18 @@ def load_sample_learning_profile():
         data.setdefault("description", default["description"])
         data.setdefault("total_render_selections", 0)
         data.setdefault("samples", {})
-        return data
+        migrated, migration_report = migrate_sample_profile(data, memory)
+        if migration_report["moved_entries"] or migration_report["from_version"] < 2:
+            atomic_write_json(SAMPLE_LEARNING_FILE, migrated)
+            print("Sample profile migration:", migration_report)
+        return migrated
     except (OSError, json.JSONDecodeError) as exc:
         print("Could not read sample learning profile; using a fresh profile:", exc)
         return default
 
 
 def save_sample_learning_profile(profile):
-    with open(SAMPLE_LEARNING_FILE, "w") as f:
-        json.dump(profile, f, indent=4)
+    atomic_write_json(SAMPLE_LEARNING_FILE, profile)
 
 
 def ensure_sample_entry(profile, obj):
@@ -247,7 +426,9 @@ def ensure_sample_entry(profile, obj):
     samples = profile.setdefault("samples", {})
     entry = samples.setdefault(key, {
         "recording": obj["recording"],
-        "object_id": obj["id"],
+        "recording_id": obj["recording_id"],
+        "object_id": obj["object_id"],
+        "legacy_object_id": obj.get("legacy_id"),
         "learned_value": 0.0,
         "times_selected": 0,
         "feedback_updates": 0,
@@ -257,10 +438,17 @@ def ensure_sample_entry(profile, obj):
 
 
 def sample_learning_factor(obj, sample_profile):
-    """Lower score is better: positive learned values gently favour a sample."""
+    """Lower score is better; repeated evidence creates a bounded audible bias."""
     entry = ensure_sample_entry(sample_profile, obj)
     learned_value = float(entry.get("learned_value", 0.0))
-    return float(np.exp(-0.55 * learned_value))
+    return float(max(0.45, min(2.20, np.exp(-1.40 * learned_value))))
+
+
+def selection_probabilities(scores):
+    """Return the exact normalised probabilities used by weighted selection."""
+    values = np.asarray(scores, dtype=np.float64)
+    weights = 1.0 / (values + 0.05)
+    return weights / weights.sum()
 
 
 def sample_exploration_factor(obj, sample_profile):
@@ -269,30 +457,48 @@ def sample_exploration_factor(obj, sample_profile):
     plays = max(0, int(entry.get("times_selected", 0)))
     total = max(0, int(sample_profile.get("total_render_selections", 0)))
     bonus = np.sqrt(np.log1p(total + 1.0) / (plays + 1.0))
-    return float(np.exp(-0.16 * bonus))
+    strength = learned_factor("exploration_weight", 3.0, 0.70, 1.45)
+    return float(np.exp(-0.16 * bonus * strength))
 
 
-def save_render_report(outfile, dream_level, usage_by_sample, usage_by_recording, role_counts):
+def save_render_report(
+    outfile,
+    dream_level,
+    usage_by_sample,
+    usage_details,
+    usage_by_recording,
+    role_counts,
+    temporal_metrics=None,
+):
     os.makedirs(RENDER_REPORT_FOLDER, exist_ok=True)
-    timestamp = datetime.now().isoformat(timespec="seconds")
     report = {
-        "version": 1,
-        "timestamp": timestamp,
+        "version": 2,
+        "generator_revision": GENERATOR_REVISION,
+        "timestamp": utc_timestamp(),
         "audio_file": outfile,
         "render_seed": int(RENDER_SEED),
         "dream_level": int(dream_level),
+        "form_variant": CURRENT_FORM_VARIANT,
         "harmony_state": dict(HARMONY_STATE),
         "total_sample_selections": int(sum(usage_by_sample.values())),
         "unique_samples": int(len(usage_by_sample)),
         "samples": dict(sorted(usage_by_sample.items())),
+        "sample_usage_details": dict(sorted(usage_details.items())),
         "recordings": dict(sorted(usage_by_recording.items())),
         "role_counts": role_counts,
+        "control_snapshot": dict(LEARNING_WEIGHTS),
+        "temporal_profile": {
+            key: round(float(value), 6)
+            for key, value in d5_temporal_profile(dream_level).items()
+        },
+        "temporal_metrics": temporal_metrics or {},
+        "reference_targets": dict(D5_REFERENCE_TARGETS) if dream_level == 5 else {},
+        "target_sample_rate": TARGET_SR,
     }
     base = os.path.splitext(os.path.basename(outfile))[0]
     timestamped_path = os.path.join(RENDER_REPORT_FOLDER, f"{base}_render_report.json")
     for path in (RENDER_REPORT_FILE, timestamped_path):
-        with open(path, "w") as f:
-            json.dump(report, f, indent=4)
+        atomic_write_json(path, report)
     return timestamped_path
 
 
@@ -306,7 +512,10 @@ def load_memory_objects():
         for obj in recording["objects"]:
             objects.append({
                 "recording": recording["recording"],
-                "id": obj["id"],
+                "recording_id": recording.get("recording_id", recording["recording"]),
+                "id": obj.get("stable_id", obj["id"]),
+                "object_id": obj.get("stable_id", obj["id"]),
+                "legacy_id": obj.get("legacy_id", obj.get("id")),
                 "start": obj["start"],
                 "end": obj["end"],
                 "duration": obj["duration"],
@@ -408,6 +617,10 @@ def musical_value(obj):
     critic_score = f.get("critic_score", 0.5)
     fatigue = f.get("fatigue", 0.0)
     transient_score = f.get("transient_score", 0.5)
+    synthetic_score = f.get(
+        "synthetic_score",
+        max(0.0, min(1.0, 0.55 * harmonicity + 0.25 * f.get("pitch_confidence", 0.0) + 0.20 * resonance_strength)),
+    )
 
     value = 1.0
 
@@ -419,6 +632,7 @@ def musical_value(obj):
     value *= (1.10 - 0.12 * ambient_score * learned_factor("ambient_weight", 4.0))
     value *= (1.14 - 0.22 * novelty)
     value *= (1.12 - 0.18 * critic_score)
+    value *= (1.12 - 0.20 * synthetic_score * learned_factor("synthetic_material_weight", 3.5))
     value *= (1.0 + 0.55 * fatigue)
 
     # Prefer usable phrase durations.
@@ -451,7 +665,7 @@ def palette_group(recording_name):
     """Stable pseudo-family from filename. This lets D5 use different families
     across sections without hard-coding any uploaded sample.
     """
-    return abs(hash(recording_name)) % 4
+    return deterministic_group(recording_name, groups=4)
 
 
 def build_role_pools(objects):
@@ -476,9 +690,41 @@ def build_role_pools(objects):
 
 
 CURRENT_MATERIAL_PLAN = None
+CURRENT_FORM_VARIANT = "baseline"
+
+D5_FORM_VARIANTS = {
+    "aesthetic_bridge": {
+        "opening": 0.96,
+        "activation": 1.04,
+        "complexity": 1.08,
+        "memory": 1.00,
+        "resolution": 0.92,
+    },
+    "central_surge": {
+        "opening": 0.90,
+        "activation": 1.10,
+        "complexity": 1.20,
+        "memory": 0.98,
+        "resolution": 0.86,
+    },
+    "double_wave": {
+        "opening": 0.88,
+        "activation": 1.18,
+        "complexity": 1.04,
+        "memory": 1.15,
+        "resolution": 0.86,
+    },
+    "late_bloom": {
+        "opening": 0.88,
+        "activation": 1.00,
+        "complexity": 1.10,
+        "memory": 1.22,
+        "resolution": 0.84,
+    },
+}
 
 
-def build_material_plan(objects, profile, dream_level):
+def build_material_plan(objects, profile, dream_level, sample_profile=None):
     by_recording = {}
 
     for obj in objects:
@@ -486,10 +732,19 @@ def build_material_plan(objects, profile, dream_level):
         by_recording.setdefault(rec, []).append(obj)
 
     recording_scores = []
+    learned_samples = (sample_profile or {}).get("samples", {})
+    exploration = learned_factor("exploration_weight", 1.4, 0.85, 1.22)
 
     for rec, rec_objects in by_recording.items():
         distances = [profile_distance(o, profile) for o in rec_objects]
-        recording_scores.append((np.mean(distances), rec))
+        past_uses = sum(
+            max(0, int(learned_samples.get(sample_key(obj), {}).get("times_selected", 0)))
+            for obj in rec_objects
+        )
+        # Soft rotation between renders: familiar recordings stay available,
+        # while equally suitable underused material gains a small advantage.
+        history_penalty = np.log1p(past_uses) * 0.035 * exploration
+        recording_scores.append((np.mean(distances) + history_penalty, rec))
 
     recording_scores.sort(key=lambda x: x[0])
 
@@ -511,6 +766,10 @@ def build_material_plan(objects, profile, dream_level):
     else:
         allowed = core + extra_d3 + extra_d5
 
+    recording_limit, _ = material_plan_limits(dream_level)
+    if len(allowed) > recording_limit:
+        allowed = random.sample(allowed, recording_limit)
+
     print("Material plan:", allowed)
     return set(allowed)
 
@@ -519,7 +778,7 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
     global CURRENT_MATERIAL_PLAN
 
     if CURRENT_MATERIAL_PLAN is None:
-        CURRENT_MATERIAL_PLAN = build_material_plan(objects, profile, dream_level)
+        CURRENT_MATERIAL_PLAN = build_material_plan(objects, profile, dream_level, sample_profile)
 
     pool = [
         obj for obj in objects
@@ -561,6 +820,10 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
         # General musical-value bias: favour clean, resonant, usable objects;
         # penalise harsh short noisy attacks.
         score *= musical_value(obj)
+
+        # The D5 preference controls must make an audible selection difference,
+        # while D1/D3 retain their established behaviour.
+        score *= d5_selection_character_factor(obj, dream_level)
 
         # Harmonic listening: pitched objects inside the detected scale are preferred.
         # Unpitched/noisy objects remain available and are not forcibly quantised.
@@ -627,7 +890,9 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
 
         # Controlled curiosity: more adventurous at D5, still recognisably Hyponoia.
         if dream_level == 5:
-            score *= random.uniform(0.58, 1.42)
+            # Exploration remains audible, but it must not overpower continuity
+            # and select an unrelated object merely because of a large random roll.
+            score *= random.uniform(0.68, 1.32)
         elif dream_level == 3:
             score *= random.uniform(0.78, 1.24)
         else:
@@ -640,19 +905,25 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
 
     scored.sort(key=lambda x: x[0])
 
-    top_n = {1: 55, 3: 110, 5: 240}[dream_level]
+    top_n = {1: 45, 3: 90, 5: 160}[dream_level]
     top = scored[:min(top_n, len(scored))]
 
-    weights = np.array([1.0 / (s + 0.05) for s, _ in top], dtype=np.float64)
-    weights /= weights.sum()
+    weights = selection_probabilities([score for score, _ in top])
 
     idx = np.random.choice(len(top), p=weights)
     return top[idx][1]
 
 
+@lru_cache(maxsize=16)
+def _load_recording(recording_name):
+    """Load each source recording once per process instead of once per event."""
+    path = os.path.join(MEMORY_FOLDER, recording_name)
+    audio, _ = librosa.load(path, sr=TARGET_SR, mono=True)
+    return audio.astype(np.float32)
+
+
 def load_fragment(obj):
-    path = os.path.join(MEMORY_FOLDER, obj["recording"])
-    audio, sr = librosa.load(path, sr=TARGET_SR, mono=True)
+    audio = _load_recording(obj["recording"])
 
     start = int(obj["start"] * TARGET_SR)
     end = int(obj["end"] * TARGET_SR)
@@ -753,7 +1024,9 @@ def make_ambient_bed(output, dream_level):
             tone += np.sin(2 * np.pi * (freq * 1.5) * t + phase) * amp * 0.16
 
         pan = random.uniform(-0.35, 0.35)
-        add_to_output(output, tone.astype(np.float32), 0, learned_factor("ambient_weight", 4.0), pan)
+        ambient_gain = learned_factor("ambient_weight", 4.0)
+        ambient_gain *= d5_temporal_profile(dream_level)["ambient_scale"]
+        add_to_output(output, tone.astype(np.float32), 0, ambient_gain, pan)
 
 
 
@@ -842,13 +1115,15 @@ def final_mix(output, dream_level):
     low = low_resonance_pulse(length, dream_level)
 
     # Slightly different placement so the high air breathes in stereo.
-    output[:, 0] += air * random.uniform(0.55, 0.85) + low * 0.80
-    output[:, 1] += np.roll(air, int(0.019 * TARGET_SR)) * random.uniform(0.55, 0.85) + low * 0.82
+    temporal = d5_temporal_profile(dream_level)
+    ambient_scale = temporal["ambient_scale"]
+    output[:, 0] += (air * random.uniform(0.55, 0.85) + low * 0.80) * ambient_scale
+    output[:, 1] += (np.roll(air, int(0.019 * TARGET_SR)) * random.uniform(0.55, 0.85) + low * 0.82) * ambient_scale
 
     output -= np.mean(output, axis=0)
 
     # Gentle glue reverb. A little more in D5, but still controlled.
-    wet = {1: 0.095, 3: 0.135, 5: 0.175}[dream_level]
+    wet = {1: 0.095, 3: 0.135, 5: 0.175}[dream_level] * ambient_scale
     output = simple_stereo_reverb(output, wet=wet)
 
     # Soft saturation for body, less aggressive than previous versions.
@@ -857,8 +1132,12 @@ def final_mix(output, dream_level):
     peak = np.max(np.abs(output)) + 1e-9
     output = output / peak * 0.88
 
-    fade_in = int(6 * TARGET_SR)
-    fade_out = int(38 * TARGET_SR)
+    if dream_level == 5:
+        fade_in = int(5.5 * TARGET_SR)
+        fade_out = int(36.0 * TARGET_SR)
+    else:
+        fade_in = int(6 * TARGET_SR)
+        fade_out = int(38 * TARGET_SR)
 
     output[:fade_in] *= np.linspace(0, 1, fade_in)[:, None]
     output[-fade_out:] *= np.linspace(1, 0, fade_out)[:, None]
@@ -889,7 +1168,14 @@ def role_sequence_for_section(section_name, dream_level):
     elif dream_level == 5:
         # D5: richer, but not cluttered. More phrase activity and resonance;
         # noise/impact stay as punctuation.
-        factors = {"gesture": 1.32, "texture": 1.16, "resonance": 1.18, "noise": 0.76, "impact": 0.70}
+        drive = d5_energy_drive(dream_level)
+        factors = {
+            "gesture": 1.40 * drive,
+            "texture": 1.16 / (drive ** 0.18),
+            "resonance": 1.12 / (drive ** 0.12),
+            "noise": 0.78,
+            "impact": 0.80 * (0.92 + 0.08 * drive),
+        }
         table = [(role, weight * factors.get(role, 1.0)) for role, weight in table]
         table = [(role, weight * random.uniform(0.92, 1.10)) for role, weight in table]
     else:
@@ -914,19 +1200,108 @@ def role_sequence_for_section(section_name, dream_level):
 
 def maybe_variation_transform(frag, role, dream_level):
     """Small variation for repeated motifs so recurrence feels musical, not copy-paste."""
+    temporal = d5_temporal_profile(dream_level)
+    development = d5_development_drive(dream_level)
     if role in ["gesture", "impact"]:
-        factor = random.uniform(0.92, 1.12)
+        if dream_level == 5:
+            factor = random.uniform(0.88, 1.08)
+            factor *= temporal["stretch_scale"] ** 0.45
+        else:
+            factor = random.uniform(0.92, 1.12)
         frag = stretch_audio(frag, factor)
-        if random.random() < 0.18:
-            frag = reverse_blend(frag, amount=random.uniform(0.06, 0.16))
-        frag = fade(frag, sec=random.uniform(0.25, 0.90))
+        reverse_chance = 0.18 * development if dream_level == 5 else 0.18
+        if random.random() < reverse_chance:
+            reverse_max = 0.18 if dream_level == 5 else 0.16
+            frag = reverse_blend(frag, amount=random.uniform(0.06, reverse_max))
+        fade_time = random.uniform(0.22, 0.75) * temporal["envelope_scale"] if dream_level == 5 else random.uniform(0.25, 0.90)
+        frag = fade(frag, sec=fade_time)
     elif role in ["texture", "resonance"]:
-        factor = random.uniform(1.02, 1.35)
+        if dream_level == 5:
+            factor = random.uniform(0.96, 1.28)
+            factor *= temporal["stretch_scale"] ** 0.35
+        else:
+            factor = random.uniform(1.02, 1.35)
         frag = stretch_audio(frag, factor)
-        frag = fade(frag, sec=random.uniform(2.5, 6.0))
+        fade_time = random.uniform(2.0, 5.0) * temporal["envelope_scale"] if dream_level == 5 else random.uniform(2.5, 6.0)
+        frag = fade(frag, sec=fade_time)
     else:
-        frag = stretch_audio(frag, random.uniform(0.95, 1.20))
-        frag = fade(frag, sec=random.uniform(0.8, 2.2))
+        if dream_level == 5:
+            factor = random.uniform(0.90, 1.14)
+            factor *= temporal["stretch_scale"] ** 0.40
+        else:
+            factor = random.uniform(0.95, 1.20)
+        frag = stretch_audio(frag, factor)
+        fade_time = random.uniform(0.7, 1.8) * temporal["envelope_scale"] if dream_level == 5 else random.uniform(0.8, 2.2)
+        frag = fade(frag, sec=fade_time)
+    return frag.astype(np.float32)
+
+
+def d5_internal_motion(frag, role, dream_level, section_name=None):
+    """Develop D5 material with smooth, role-aware internal rhythmic motion."""
+    if dream_level != 5 or len(frag) < 64:
+        return frag.astype(np.float32)
+
+    temporal_drive = d5_temporal_profile(dream_level)["temporal_drive"]
+    development = d5_development_drive(dream_level)
+    section_rate = {
+        "opening": 0.72,
+        "activation": 1.00,
+        "complexity": 1.24,
+        "memory": 0.88,
+        "resolution": 0.68,
+    }.get(section_name, 1.0)
+    if role in ["gesture", "impact"]:
+        rate = random.uniform(1.8, 3.6) * temporal_drive
+        depth = min(0.20, 0.10 * development)
+    elif role == "noise":
+        rate = random.uniform(1.4, 2.8) * temporal_drive
+        depth = min(0.18, 0.09 * development)
+    elif role == "texture":
+        rate = random.uniform(0.30, 0.78) * temporal_drive
+        depth = min(0.13, 0.065 * development)
+    else:  # resonance
+        rate = random.uniform(0.12, 0.36) * temporal_drive
+        depth = min(0.10, 0.05 * development)
+
+    rate *= section_rate
+    phase = random.uniform(0.0, 2.0 * np.pi)
+    time = np.arange(len(frag), dtype=np.float32) / TARGET_SR
+    pulse = 0.5 + 0.5 * np.sin(2.0 * np.pi * rate * time + phase)
+    pulse = np.power(pulse, 1.35)
+    motion = (1.0 - depth) + depth * pulse
+    return (frag * motion.astype(np.float32)).astype(np.float32)
+
+
+def continuity_edge_guard(frag, role, dream_level):
+    """Guarantee musical D5 attacks/releases after every transformation stage."""
+    if dream_level != 5 or len(frag) < 32:
+        return frag.astype(np.float32)
+
+    attack_sec = {
+        "gesture": 0.10,
+        "impact": 0.07,
+        "noise": 0.18,
+        "texture": 0.48,
+        "resonance": 0.75,
+    }.get(role, 0.20)
+    release_sec = {
+        "gesture": 0.95,
+        "impact": 0.62,
+        "noise": 1.35,
+        "texture": 3.20,
+        "resonance": 4.80,
+    }.get(role, 1.20)
+    smoothness = learned_factor("transition_smoothness_weight", 1.8, 0.90, 1.32)
+    attack_n = min(int(attack_sec * smoothness * TARGET_SR), len(frag) // 3)
+    release_n = min(int(release_sec * smoothness * TARGET_SR), len(frag) // 2)
+    if attack_n > 8:
+        attack = np.sin(np.linspace(0.0, np.pi / 2.0, attack_n)) ** 1.25
+        frag[:attack_n] *= attack.astype(np.float32)
+    if release_n > 8:
+        release = np.cos(np.linspace(0.0, np.pi / 2.0, release_n)) ** 1.45
+        frag[-release_n:] *= release.astype(np.float32)
+    frag[0] = 0.0
+    frag[-1] = 0.0
     return frag.astype(np.float32)
 
 def transform_fragment_for_role(frag, role, dream_level):
@@ -934,11 +1309,16 @@ def transform_fragment_for_role(frag, role, dream_level):
     Different musical functions receive different treatments.
     This prevents all layers from dissolving into the same texture.
     """
+    temporal = d5_temporal_profile(dream_level)
+    stretch_scale = temporal["stretch_scale"]
+    envelope_scale = temporal["envelope_scale"]
+
     if role == "gesture":
         # D5 gestures should be clear phrases, not tiny decorative sparks.
         if dream_level == 5:
             stretch = random.uniform(0.75, 1.35)
-            fade_time = random.uniform(0.20, 0.75)
+            stretch *= stretch_scale
+            fade_time = random.uniform(0.20, 0.75) * envelope_scale
             amp = random.uniform(0.135, 0.220)
         else:
             stretch = random.uniform(0.65, 1.75)
@@ -953,49 +1333,50 @@ def transform_fragment_for_role(frag, role, dream_level):
         frag = smooth_tail(frag, tail_sec=random.uniform(0.18, 0.42), decay=random.uniform(0.18, 0.35))
 
     elif role == "impact":
-        stretch = random.uniform(0.65, 1.20) if dream_level == 5 else random.uniform(0.55, 1.25)
+        stretch = random.uniform(0.65, 1.20) * stretch_scale if dream_level == 5 else random.uniform(0.55, 1.25)
         frag = stretch_audio(frag, stretch)
         if random.random() < 0.22:
             frag = reverse_blend(frag, amount=random.uniform(0.10, 0.22))
         frag = clean_band(frag, low=45, high=13000)
-        frag = fade(frag, sec=random.uniform(0.08, 0.55))
+        frag = fade(frag, sec=random.uniform(0.08, 0.55) * envelope_scale)
         frag = smooth_tail(frag, tail_sec=random.uniform(0.10, 0.30), decay=random.uniform(0.12, 0.25))
         amp = random.uniform(0.120, 0.205) if dream_level == 5 else random.uniform(0.13, 0.24)
 
     elif role == "noise":
-        stretch = random.uniform(1.4, 3.2) if dream_level == 5 else random.uniform(1.2, 3.8 + dream_level * 0.25)
+        stretch = random.uniform(1.4, 3.2) * stretch_scale if dream_level == 5 else random.uniform(1.2, 3.8 + dream_level * 0.25)
         frag = stretch_audio(frag, stretch)
         if dream_level >= 3:
             frag = reverse_blend(frag, amount=random.uniform(0.20, 0.45))
         frag = clean_band(frag, low=80, high=14000)
-        frag = fade(frag, sec=random.uniform(0.9, 2.8))
+        frag = fade(frag, sec=random.uniform(0.9, 2.8) * envelope_scale)
         frag = smooth_tail(frag, tail_sec=random.uniform(0.25, 0.75), decay=random.uniform(0.18, 0.36))
         amp = random.uniform(0.065, 0.120) if dream_level == 5 else random.uniform(0.060, 0.125)
 
     elif role == "resonance":
         # Long layer, but quieter and more distinct in D5.
-        stretch = random.uniform(3.4, 7.6) if dream_level == 5 else random.uniform(3.0, 7.5 + dream_level * 0.45)
+        stretch = random.uniform(3.4, 7.6) * stretch_scale if dream_level == 5 else random.uniform(3.0, 7.5 + dream_level * 0.45)
         frag = stretch_audio(frag, stretch)
         if dream_level >= 3 and random.random() < (0.55 if dream_level == 5 else 1.0):
             frag = harmonic_bloom(frag, dream_level)
         frag = clean_band(frag, low=28, high=11200)
-        frag = fade(frag, sec=random.uniform(4.5, 9.5))
+        frag = fade(frag, sec=random.uniform(4.5, 9.5) * envelope_scale)
         frag = smooth_tail(frag, tail_sec=random.uniform(0.8, 1.8), decay=random.uniform(0.22, 0.45))
         amp = random.uniform(0.060, 0.125) if dream_level == 5 else random.uniform(0.055, 0.12)
 
     else:  # texture
-        stretch = random.uniform(2.4, 5.8) if dream_level == 5 else random.uniform(2.0, 5.5 + dream_level * 0.35)
+        stretch = random.uniform(2.4, 5.8) * stretch_scale if dream_level == 5 else random.uniform(2.0, 5.5 + dream_level * 0.35)
         frag = stretch_audio(frag, stretch)
         if dream_level >= 3 and random.random() < (0.45 if dream_level == 5 else 0.65):
             frag = harmonic_bloom(frag, dream_level)
         frag = clean_band(frag, low=34, high=12000)
-        frag = fade(frag, sec=random.uniform(2.8, 6.8))
+        frag = fade(frag, sec=random.uniform(2.8, 6.8) * envelope_scale)
         frag = smooth_tail(frag, tail_sec=random.uniform(0.45, 1.2), decay=random.uniform(0.18, 0.38))
         amp = random.uniform(0.075, 0.150) if dream_level == 5 else random.uniform(0.070, 0.145)
 
     amp *= (1 + dream_level * 0.055)
     if role == "gesture":
         amp *= learned_factor("gesture_weight", 4.0)
+        amp *= d5_energy_drive(dream_level)
     elif role == "noise":
         amp /= learned_factor("noise_penalty", 4.0)
     elif role == "impact":
@@ -1023,7 +1404,11 @@ def musical_delay_tail(x, role, dream_level):
     else:
         taps = [(0.16, 0.18)]
 
-    # D5 gets a little more phrase continuation.
+    if dream_level == 5:
+        delay_scale = d5_temporal_profile(dream_level)["delay_scale"]
+        taps = [(delay * delay_scale, gain) for delay, gain in taps]
+
+    # D5 gets a little more phrase continuation, with quicker tap spacing.
     gain_scale = 1.15 if dream_level == 5 else 0.85
     extra = int(max(t[0] for t in taps) * TARGET_SR) + int(0.8 * TARGET_SR)
     out = np.zeros(len(x) + extra, dtype=np.float32)
@@ -1043,7 +1428,33 @@ def musical_delay_tail(x, role, dream_level):
 
 
 
-def organic_emergence(x, role, dream_level):
+def emergence_envelope_scales(features=None):
+    """Return subtle, explainable envelope scaling for bright salient events.
+
+    Bright foreground/transient material receives a little more time to enter
+    and leave.  The learned transition control now affects the actual envelope,
+    as well as continuity-aware object selection.
+    """
+    features = features or {}
+    brightness = float(features.get("brightness", 0.0) or 0.0)
+    brightness_amount = max(0.0, min(1.0, (brightness - 3200.0) / 6200.0))
+    salience = max(
+        float(features.get("foreground_probability", 0.0) or 0.0),
+        float(features.get("transient_score", 0.0) or 0.0),
+        float(features.get("contrast_score", 0.0) or 0.0),
+    )
+    salience = max(0.0, min(1.0, salience))
+    bright_salience = brightness_amount * (0.45 + 0.55 * salience)
+    learned_smoothness = learned_factor("transition_smoothness_weight", 3.0, 0.88, 1.35)
+    return {
+        "pre": learned_smoothness * (1.0 + 0.22 * bright_salience),
+        "fade_in": learned_smoothness * (1.0 + 0.52 * bright_salience),
+        "fade_out": learned_smoothness * (1.0 + 0.42 * bright_salience),
+        "bright_salience": bright_salience,
+    }
+
+
+def organic_emergence(x, role, dream_level, features=None):
     """
     Makes phrase entries feel as if they grow out of the existing texture.
     It adds a soft pre-emergence shadow and longer musical envelopes,
@@ -1080,12 +1491,24 @@ def organic_emergence(x, role, dream_level):
         out_sec = random.uniform(0.35, 1.20)
         shadow_gain = 0.10
 
+    scales = emergence_envelope_scales(features)
+    pre_sec *= scales["pre"]
+    in_sec *= scales["fade_in"]
+    out_sec *= scales["fade_out"]
+    if dream_level == 5:
+        temporal_scale = d5_temporal_profile(dream_level)["envelope_scale"]
+        pre_sec *= temporal_scale
+        in_sec *= temporal_scale
+        out_sec *= temporal_scale
+
     # Pre-emergence shadow: a filtered reversed beginning that foreshadows the phrase.
     pre_n = min(int(pre_sec * TARGET_SR), max(0, len(x) // 3))
     if pre_n > 64:
         shadow = x[:pre_n][::-1].copy() * shadow_gain
         try:
-            shadow = butter_filter(shadow, "lowpass", 6200 if role in ["gesture", "impact"] else 4800)
+            base_cutoff = 6200 if role in ["gesture", "impact"] else 4800
+            shadow_cutoff = max(3800, base_cutoff - 1400 * scales["bright_salience"])
+            shadow = butter_filter(shadow, "lowpass", shadow_cutoff)
         except Exception:
             pass
         shadow *= np.linspace(0.0, 1.0, len(shadow)).astype(np.float32)
@@ -1170,15 +1593,23 @@ def central_spectral_bloom(output, dream_level):
 
 
 def generate_soundscape(dream_level):
-    global CURRENT_MATERIAL_PLAN, LEARNING_WEIGHTS
+    global CURRENT_MATERIAL_PLAN, CURRENT_FORM_VARIANT, LEARNING_WEIGHTS
     CURRENT_MATERIAL_PLAN = None
+    CURRENT_FORM_VARIANT = "aesthetic_bridge" if dream_level == 5 else "baseline"
 
+    print("Generator revision:", GENERATOR_REVISION)
     print("Render seed:", RENDER_SEED)
-    LEARNING_WEIGHTS = load_learning_weights()
-    sample_profile = load_sample_learning_profile()
+    print("Form variant:", CURRENT_FORM_VARIANT)
+    LEARNING_WEIGHTS = load_learning_weights(dream_level)
+    pulse_bpm = random.uniform(*D5_REFERENCE_TARGETS["pulse_bpm_range"]) if dream_level == 5 else 0.0
+    if dream_level == 5:
+        print("Reference pulse BPM:", round(pulse_bpm, 3))
 
     profile = load_profile()
     objects = load_memory_objects()
+    with open(MEMORY_FILE, "r", encoding="utf-8") as handle:
+        memory = json.load(handle)
+    sample_profile = load_sample_learning_profile(memory)
     build_role_pools(objects)
 
     output = np.zeros((OUTPUT_DURATION * TARGET_SR, 2), dtype=np.float32)
@@ -1198,12 +1629,18 @@ def generate_soundscape(dream_level):
     motif_bank = []
     usage_counts = {}
     usage_by_sample = {}
+    usage_details = {}
+    event_durations = []
+    foreground_durations = []
+    event_starts = []
     total_added = 0
     role_counts = {"gesture": 0, "texture": 0, "resonance": 0, "noise": 0, "impact": 0}
+    role_last_end = {role: None for role in role_counts}
 
     for section_name, section_start, section_end, density in form:
         section_length = section_end - section_start
         density *= learned_factor("richness_weight", 3.2, 0.78, 1.25)
+        density *= form_density_multiplier(section_name, dream_level)
 
         # Middle bloom: the central section should feel like a flower opening,
         # with more independent phrase activity but smooth transitions.
@@ -1215,48 +1652,49 @@ def generate_soundscape(dream_level):
         # D5: not more events; clearer simultaneous phrase-layers.
         # More complexity should come from distinct musical functions, not clutter.
         if dream_level == 5:
-            items = int(15 * density * 1.34)
+            items = int(15 * density * 1.23)
         elif dream_level == 3:
             items = int(12 * density * 1.28)
         else:
             items = int(11 * density * 1.15)
+        items = max(1, int(items * dream_activity_multiplier(dream_level)))
 
         for i in range(items):
             role = role_sequence_for_section(section_name, dream_level)
 
-            # D5 uses shifting palette families: related within a section,
-            # refreshed between sections. This avoids both random clutter and sameness.
-            if dream_level == 5:
-                section_group_map = {
-                    "opening": {0, 1},
-                    "activation": {1, 2},
-                    "complexity": {0, 2, 3},
-                    "memory": {2, 3},
-                    "resolution": {0, 3},
-                }
-                preferred_groups = section_group_map.get(section_name, {0, 1, 2, 3})
-            else:
-                preferred_groups = None
+            # Keep one palette across the form. Sections differ through role,
+            # transformation and density rather than unrelated new families.
+            preferred_groups = None
 
             # Coherence: sometimes return to a previous object from the same role.
             # This creates motif-like recurrence instead of unrelated new material.
             same_role_motifs = [m for m in motif_bank if m.get("role") == role]
-            repeat_chance = {1: 0.20, 3: 0.22, 5: 0.16}[dream_level] * learned_factor("coherence_weight", 4.0, 0.70, 1.35)
-            use_motif = same_role_motifs and random.random() < repeat_chance
+            repeat_chance = (
+                {1: 0.25, 3: 0.26, 5: 0.22}[dream_level]
+                * learned_factor("coherence_weight", 4.0, 0.70, 1.35)
+                * learned_factor("material_development_weight", 1.8, 0.85, 1.30)
+                / learned_factor("repetition_control", 3.0, 0.70, 1.45)
+            )
+            _, unique_object_limit = material_plan_limits(dream_level)
+            palette_is_full = len(used) >= unique_object_limit
+            use_motif = bool(same_role_motifs) and (
+                palette_is_full or random.random() < repeat_chance
+            )
 
             if use_motif:
                 obj = random.choice(same_role_motifs)
-                key = (obj["recording"], obj["id"])
+                key = (obj["recording_id"], obj["object_id"])
             else:
                 obj = choose_weighted(objects, profile, dream_level, previous, desired_role=role, preferred_groups=preferred_groups, usage_counts=usage_counts, sample_profile=sample_profile)
-                key = (obj["recording"], obj["id"])
+                key = (obj["recording_id"], obj["object_id"])
                 tries = 0
                 while key in used and tries < 18:
                     obj = choose_weighted(objects, profile, dream_level, previous, desired_role=role, preferred_groups=preferred_groups, usage_counts=usage_counts, sample_profile=sample_profile)
-                    key = (obj["recording"], obj["id"])
+                    key = (obj["recording_id"], obj["object_id"])
                     tries += 1
                 used.add(key)
-                if len(motif_bank) < 40 and role in ["gesture", "texture", "resonance"]:
+                motif_limit = {1: 6, 3: 10, 5: 14}[dream_level]
+                if len(motif_bank) < motif_limit and role in ["gesture", "texture", "resonance"]:
                     motif_obj = dict(obj)
                     motif_obj["role"] = role
                     motif_bank.append(motif_obj)
@@ -1268,6 +1706,18 @@ def generate_soundscape(dream_level):
                 continue
 
             frag, amp = transform_fragment_for_role(frag, role, dream_level)
+            frag = d5_internal_motion(frag, role, dream_level, section_name)
+            if dream_level == 5:
+                # Shape an audible formal energy arc without merely normalising
+                # the entire render louder.
+                section_gain = {
+                    "opening": 0.96,
+                    "activation": 1.03,
+                    "complexity": 1.07,
+                    "memory": 1.01,
+                    "resolution": 0.94,
+                }[section_name]
+                amp *= 1.0 + (section_gain - 1.0) * d5_energy_drive(dream_level)
             if use_motif:
                 frag = maybe_variation_transform(frag, role, dream_level)
                 amp *= random.uniform(0.82, 1.05)
@@ -1275,25 +1725,33 @@ def generate_soundscape(dream_level):
             # Final smoothing pass: delays first, then an organic emergence envelope,
             # so phrases feel as if they grow from previous material rather than being inserted.
             frag = musical_delay_tail(frag, role, dream_level)
-            frag = organic_emergence(frag, role, dream_level)
+            frag = organic_emergence(frag, role, dream_level, obj.get("features", {}))
+            frag = continuity_edge_guard(frag, role, dream_level)
 
             # Positioning: D5 uses phrase lanes so layers stay perceptually distinct.
             base_position = section_start + (i / max(1, items)) * section_length
+            base_position = d5_soft_grid_start(
+                base_position,
+                section_start,
+                role,
+                dream_level,
+                pulse_bpm,
+            )
 
             if dream_level == 5:
                 role_offsets = {
-                    "resonance": -3.5,
-                    "texture": -0.6,
-                    "gesture": 1.2,
-                    "noise": 2.4,
-                    "impact": 0.4,
+                    "resonance": -2.10,
+                    "texture": -0.40,
+                    "gesture": 0.70,
+                    "noise": 1.10,
+                    "impact": 0.25,
                 }
                 role_jitter = {
-                    "resonance": 3.0,
-                    "texture": 2.4,
-                    "gesture": 0.9,
-                    "noise": 1.4,
-                    "impact": 0.6,
+                    "resonance": 1.80,
+                    "texture": 1.30,
+                    "gesture": 0.55,
+                    "noise": 0.85,
+                    "impact": 0.35,
                 }
                 jitter = role_offsets.get(role, 0.0) + random.uniform(-role_jitter.get(role, 2.0), role_jitter.get(role, 2.0))
             else:
@@ -1305,6 +1763,14 @@ def generate_soundscape(dream_level):
                     jitter = random.uniform(-6.0, 6.0)
 
             start = max(0, base_position + jitter)
+            start = d5_continuity_start(
+                start,
+                len(frag) / TARGET_SR,
+                role,
+                role_last_end[role],
+                dream_level,
+                pulse_bpm,
+            )
 
             # Spatial identity: D5 separates roles into recognisable regions/layers.
             if dream_level == 5:
@@ -1325,9 +1791,38 @@ def generate_soundscape(dream_level):
                     pan = random.uniform(-0.60, 0.60)
 
             add_to_output(output, frag, start, amp, pan)
+            event_duration = len(frag) / TARGET_SR
+            role_last_end[role] = max(
+                role_last_end[role] or 0.0,
+                start + event_duration,
+            )
+            event_durations.append(event_duration)
+            event_starts.append(start)
+            if role in ["gesture", "impact", "noise"]:
+                foreground_durations.append(event_duration)
             usage_counts[obj["recording"]] = usage_counts.get(obj["recording"], 0) + 1
             key = sample_key(obj)
             usage_by_sample[key] = usage_by_sample.get(key, 0) + 1
+            detail = usage_details.setdefault(key, {
+                "recording": obj["recording"],
+                "recording_id": obj["recording_id"],
+                "object_id": obj["object_id"],
+                "legacy_object_id": obj.get("legacy_id"),
+                "selection_count": 0,
+                "exposure_sec": 0.0,
+                "gain_sum": 0.0,
+                "role_counts": {},
+                "section_counts": {},
+                "first_start_sec": None,
+                "last_start_sec": None,
+            })
+            detail["selection_count"] += 1
+            detail["exposure_sec"] = round(detail["exposure_sec"] + len(frag) / TARGET_SR, 6)
+            detail["gain_sum"] = round(detail["gain_sum"] + float(amp), 6)
+            detail["role_counts"][role] = detail["role_counts"].get(role, 0) + 1
+            detail["section_counts"][section_name] = detail["section_counts"].get(section_name, 0) + 1
+            detail["first_start_sec"] = round(start, 6) if detail["first_start_sec"] is None else detail["first_start_sec"]
+            detail["last_start_sec"] = round(start, 6)
             sample_entry = ensure_sample_entry(sample_profile, obj)
             sample_entry["times_selected"] = int(sample_entry.get("times_selected", 0)) + 1
             sample_entry["last_used"] = datetime.now().isoformat(timespec="seconds")
@@ -1355,14 +1850,37 @@ def generate_soundscape(dream_level):
     print()
     print("Added layers:", total_added)
     print("Role counts:", role_counts)
+    sorted_starts = sorted(event_starts)
+    quick_successions = sum(
+        1 for left, right in zip(sorted_starts, sorted_starts[1:])
+        if right - left <= 0.75
+    )
+    temporal_metrics = {
+        "reference_pulse_bpm": round(float(pulse_bpm), 6) if dream_level == 5 else None,
+        "event_rate_per_minute": round(total_added / (OUTPUT_DURATION / 60.0), 6),
+        "foreground_event_rate_per_minute": round(
+            sum(role_counts[role] for role in ["gesture", "impact", "noise"])
+            / (OUTPUT_DURATION / 60.0),
+            6,
+        ),
+        "average_event_duration_sec": round(float(np.mean(event_durations)) if event_durations else 0.0, 6),
+        "average_foreground_duration_sec": round(
+            float(np.mean(foreground_durations)) if foreground_durations else 0.0,
+            6,
+        ),
+        "quick_succession_count": int(quick_successions),
+    }
+    print("Temporal metrics:", temporal_metrics)
     print("Saved:")
     print(outfile)
     render_report_path = save_render_report(
         outfile,
         dream_level,
         usage_by_sample,
+        usage_details,
         usage_counts,
         role_counts,
+        temporal_metrics,
     )
     save_sample_learning_profile(sample_profile)
 

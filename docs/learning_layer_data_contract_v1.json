@@ -1,0 +1,115 @@
+{
+    "contract_name": "Hyponoia Learning Layer Data Contract",
+    "contract_version": "1.0.0",
+    "date": "2026-08-20",
+    "authority_order": [
+        "human_rating",
+        "human_text_intent",
+        "critic_auxiliary_signal",
+        "heuristic_fallback"
+    ],
+    "invariants": {
+        "audio_sample_rate_hz": 48000,
+        "human_feedback_is_primary_target": true,
+        "critic_is_never_silently_merged_with_human_rating": true,
+        "feedback_history_is_append_only": true,
+        "adaptive_controls_are_bounded": [0.5, 1.8],
+        "sample_preference_is_bounded": [-1.0, 1.0],
+        "stable_ids_are_content_derived": true,
+        "unknown_text_does_not_change_controls": true,
+        "project_or_library_reset_is_never_automatic": true
+    },
+    "entities": {
+        "recording": {
+            "required": ["recording", "recording_id", "sample_rate", "duration", "objects"],
+            "recording_id": "rec_<20 hex chars from canonical mono float32 audio>",
+            "sample_rate": 48000
+        },
+        "sound_object": {
+            "required": ["stable_id", "legacy_id", "start_sample", "end_sample", "features"],
+            "stable_id": "obj_<20 hex chars from canonical fragment audio>",
+            "legacy_id": "Original positional integer retained only for safe migration."
+        },
+        "render_report": {
+            "schema_version": 2,
+            "required": [
+                "audio_file",
+                "render_seed",
+                "dream_level",
+                "samples",
+                "sample_usage_details",
+                "role_counts",
+                "control_snapshot",
+                "target_sample_rate"
+            ],
+            "sample_usage_detail_fields": [
+                "recording_id",
+                "object_id",
+                "selection_count",
+                "exposure_sec",
+                "gain_sum",
+                "role_counts",
+                "section_counts",
+                "first_start_sec",
+                "last_start_sec"
+            ]
+        },
+        "critic_report": {
+            "schema_version": 2,
+            "required": ["internal_scores", "sample_usage", "analysis"],
+            "score_dimensions": [
+                "musicality",
+                "coherence",
+                "richness",
+                "transitions",
+                "bloom_quality",
+                "overall"
+            ],
+            "role": "Auxiliary analytic estimate and calibration input, never the primary learning label."
+        },
+        "feedback_event": {
+            "schema_version": 2,
+            "required": [
+                "event_id",
+                "timestamp",
+                "human_scores",
+                "internal_scores",
+                "differences_human_minus_internal",
+                "comment_interpretation",
+                "updated_level_weights",
+                "learning_update",
+                "sample_updates"
+            ],
+            "event_id": "fb_<UUID hex>",
+            "rating_scale": [0, 100]
+        },
+        "level_specific_text_profile": {
+            "levels": ["D1", "D3", "D5"],
+            "shared_numeric_ratings": "Human numeric ratings update the common aesthetic weights.",
+            "level_specific_text": "Text intent updates only the render level or an explicit D1/D3/D5 target.",
+            "global_text": "All three level profiles change only after an explicit global phrase.",
+            "effective_control": "shared_weight + active_level_weight - 1.0, bounded to [0.5, 1.8]"
+        },
+        "sample_update": {
+            "required": [
+                "overall_signal",
+                "role_signal",
+                "critic_residual",
+                "credit",
+                "uncertainty",
+                "old_value",
+                "delta",
+                "new_value"
+            ],
+            "direction": "Positive human evidence produces positive delta; negative evidence produces negative delta.",
+            "credit_basis": ["selection_count", "exposure_sec", "gain", "role"]
+        }
+    },
+    "library_and_project_modes_reserved_for_interface_phase": {
+        "keep_current_library": "Retain the active sound set.",
+        "replace_active_library": "Change only the active project set; do not delete source files.",
+        "new_project_keep_my_taste": "New sound set with the selected persistent taste profile.",
+        "new_style_clean_slate": "New isolated library/session/learning profile.",
+        "reopen_previous_project": "Restore sounds, stable IDs, cached features, ratings, and the project's learning profile."
+    }
+}
