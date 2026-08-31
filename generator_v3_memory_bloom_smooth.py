@@ -56,6 +56,8 @@ DEFAULT_LEARNING_WEIGHTS = {
     "synthetic_material_weight": 1.0,
     "activity_weight": 1.0,
     "material_development_weight": 1.0,
+    "low_frequency_control": 1.0,
+    "layer_clarity_weight": 1.0,
 }
 
 LEARNING_WEIGHTS = dict(DEFAULT_LEARNING_WEIGHTS)

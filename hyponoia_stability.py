@@ -83,6 +83,15 @@ def _normalise_phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
+def _normalise_unicode_phrase(text: str) -> str:
+    """Normalise feedback without discarding Greek or other Unicode letters."""
+    # ``lower`` preserves the Greek final sigma (ς), unlike ``casefold`` which
+    # rewrites it to σ and makes natural-language word endings harder to match.
+    decomposed = unicodedata.normalize("NFKD", str(text)).lower()
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"[^\w]+", " ", without_marks, flags=re.UNICODE).strip()
+
+
 _INTENT_RULES = (
     {
         "intent": "increase_musicality",
@@ -167,6 +176,81 @@ _INTENT_RULES = (
 )
 
 
+_UNICODE_INTENT_RULES = (
+    {
+        "intent": "increase_musicality",
+        "patterns": (
+            r"\bπερισσοτερ[ηοα]?\s+μουσικοτητα\b",
+            r"\bπιο μουσικ(?:ο|η|α)\b",
+            r"\bαυξησ(?:ε|η)\s+(?:τη\s+)?μουσικοτητα\b",
+        ),
+        "updates": {"musicality_weight": 0.06},
+    },
+    {
+        "intent": "increase_synthetic_material",
+        "patterns": (
+            r"\bπερισσοτερ(?:α|ο)\s+(?:synth|synthesizer|συνθεσαιζερ|συνθετικ(?:ο|α))\b",
+            r"\bπερισσοτερ(?:ο|α)\s+ηλεκτρονικ(?:ο|α)\s+(?:υλικο|ηχοι?)\b",
+        ),
+        "updates": {"synthetic_material_weight": 0.08},
+    },
+    {
+        "intent": "decrease_repetition",
+        "patterns": (
+            r"\bλιγοτερ[ηοα]?\s+επαναληψη\b",
+            r"\bλιγοτερες\s+επαναληψεις\b",
+            r"\bνα μην επαναλαμβανεται\b",
+        ),
+        "updates": {"repetition_control": 0.10, "exploration_weight": 0.06},
+    },
+    {
+        "intent": "increase_smoothness",
+        "patterns": (
+            r"\bπιο ομαλ(?:ο|η|ες)\b",
+            r"\bομαλοτερ(?:η|ες|α)\s+μεταβασεις?\b",
+            r"\bλιγοτερο αποτομ(?:ο|ες|α)\b",
+        ),
+        "updates": {"transition_smoothness_weight": 0.08},
+    },
+    {
+        "intent": "increase_richness",
+        "patterns": (
+            r"\bπερισσοτερ(?:α|ο)\s+(?:ηχητικα\s+)?(?:επιπεδα|στρωματα|υφες)\b",
+            r"\bπλουσιοτερ(?:ο|η|α)\b",
+            r"\bμεγαλυτερ(?:ο|η)\s+ηχητικ(?:ο|η)\s+βαθος\b",
+        ),
+        "updates": {"richness_weight": 0.07},
+    },
+    {
+        "intent": "increase_material_development",
+        "patterns": (
+            r"\bπερισσοτερ[ηοα]?\s+(?:μουσικ[ηο]?\s+)?αναπτυξη\b",
+            r"\bνα εξελισσ(?:εται|ονται)\b",
+            r"\bαναπτυξ(?:ε|η)\s+(?:τους\s+)?(?:ηχους|υλικα|δειγματα)\b",
+        ),
+        "updates": {"material_development_weight": 0.08},
+    },
+    {
+        "intent": "reduce_low_frequency_masking",
+        "patterns": (
+            r"\bλιγοτερ(?:α|ο)\s+(?:μπασα|μπασο|χαμηλα|χαμηλες συχνοτητες)\b",
+            r"\bμειωσ(?:ε|η)\s+(?:τα\s+)?(?:μπασα|χαμηλα|χαμηλες συχνοτητες)\b",
+        ),
+        "updates": {"low_frequency_control": 0.08},
+    },
+    {
+        "intent": "increase_layer_clarity",
+        "patterns": (
+            r"\b(?:λιγοτερ[αο]?\s+)?κρυμμεν(?:α|οι|ες)\s+(?:πραγματα|ηχοι|επιπεδα|στρωματα)\b",
+            r"\bλιγοτερ[αο]?\s+θαμμεν(?:α|οι|ες)\s+(?:ηχοι|επιπεδα|στρωματα)\b",
+            r"\bπιο καθαρ(?:α|οι|ες)\s+(?:ηχητικα\s+)?(?:επιπεδα|στρωματα)\b",
+            r"\bκαλυτερ(?:ο|η)\s+διαχωρισμ(?:ο|ος)\b",
+        ),
+        "updates": {"layer_clarity_weight": 0.08},
+    },
+)
+
+
 def normalise_dream_level(value: Any) -> str | None:
     """Return D1/D3/D5 for a supported level representation."""
     if value is None:
@@ -219,19 +303,24 @@ def feedback_target_scope(comment: str, default_target_level: Any = None) -> dic
 
 
 def parse_feedback_comment(comment: str, default_target_level: Any = None) -> dict[str, Any]:
-    """Map the bounded English MVP vocabulary and attach safe D-level routing."""
+    """Map bounded English/Greek feedback and attach safe D-level routing."""
     normalised = _normalise_phrase(comment)
+    unicode_normalised = _normalise_unicode_phrase(comment)
     target = feedback_target_scope(comment, default_target_level)
     actions: list[dict[str, Any]] = []
     combined: dict[str, float] = {}
-    for rule in _INTENT_RULES:
-        matched = next((pattern for pattern in rule["patterns"] if re.search(pattern, normalised)), None)
+    for rule, search_text, language in (
+        *((rule, normalised, "english") for rule in _INTENT_RULES),
+        *((rule, unicode_normalised, "greek_or_unicode") for rule in _UNICODE_INTENT_RULES),
+    ):
+        matched = next((pattern for pattern in rule["patterns"] if re.search(pattern, search_text)), None)
         if not matched:
             continue
         updates = dict(rule["updates"])
         actions.append({
             "intent": rule["intent"],
             "matched_pattern": matched,
+            "matched_language": language,
             "control_deltas": updates,
             "implementation_note": rule.get("implementation_note"),
         })
@@ -242,7 +331,8 @@ def parse_feedback_comment(comment: str, default_target_level: Any = None) -> di
         "schema_version": 1,
         "original_text": comment,
         "normalised_text": normalised,
-        "status": "interpreted" if actions else ("empty" if not normalised else "unrecognised"),
+        "unicode_normalised_text": unicode_normalised,
+        "status": "interpreted" if actions else ("empty" if not unicode_normalised else "unrecognised"),
         "confidence": 1.0 if actions else 0.0,
         "actions": actions,
         "combined_control_deltas": combined,

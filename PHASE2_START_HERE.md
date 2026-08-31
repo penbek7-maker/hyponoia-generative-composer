@@ -98,3 +98,32 @@ generalization for that family.
 The bridge fails closed: missing or malformed configuration or embeddings
 produce a neutral factor instead of interrupting a render. Every render report
 records whether the assist was active, its strength, and the embedding count.
+
+## Dynamic user library foundation
+
+`library_manager_v1.py` creates a content-aware manifest for a user-controlled
+WAV folder. It detects additions, replacements, removals and unambiguous
+renames without decoding, moving or deleting the user's audio. Removed and
+replaced inventory entries are archived, while unchanged content keeps its
+history. This is the safe discovery layer for the forthcoming **Update
+Library** button; it does not silently start training.
+
+```bash
+.venv/bin/python library_manager_v1.py \
+  --library /path/to/Hyponoia\ Library \
+  --manifest /path/to/private/library_manifest_v1.json
+```
+
+## Unified composition feedback foundation
+
+`composition_feedback_v1.py` accepts the seven 1–5 listener ratings used by
+the Deep Learning listening workflow plus `more`, `less` and free-comment
+text. It supports the first bounded Greek and English musical intents and
+routes every update only to the rated D1, D3 or D5 profile. Ratings can request
+musicality, coherence, smooth transitions, controlled variety, synth presence
+and development. Text can additionally request clearer layers and less
+low-frequency masking. The Critic remains diagnostic and cannot override an
+explicit human rating.
+
+These new controls are persisted now but remain sonically conservative until
+the controlled D1 A/B composition integration is validated.
