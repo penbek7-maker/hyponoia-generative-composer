@@ -1,0 +1,5 @@
+{
+  "mode": "off",
+  "embeddings_path": "phase2_artifacts/embeddings_v2.json",
+  "strength": 0.35
+}

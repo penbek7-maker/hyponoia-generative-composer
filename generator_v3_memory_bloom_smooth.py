@@ -19,6 +19,7 @@ from hyponoia_stability import (
     sample_key as stable_sample_key,
     utc_timestamp,
 )
+from representation_assist_v1 import RepresentationAssist
 
 MEMORY_FILE = "memory_index_v3.json"
 MEMORY_FOLDER = "alpha_memory"
@@ -29,6 +30,9 @@ SAMPLE_LEARNING_FILE = "sample_learning_profile.json"
 RENDER_REPORT_FILE = "render_report.json"
 RENDER_REPORT_FOLDER = "render_reports"
 GENERATOR_REVISION = "2026-08-21-d5-aesthetic-bridge-5.1"
+REPRESENTATION_CONFIG_FILE = "representation_config.json"
+REPRESENTATION_ASSIST = RepresentationAssist.disabled()
+REPRESENTATION_ASSIST_ROLES = frozenset({"gesture", "texture", "impact", "noise"})
 
 D5_REFERENCE_TARGETS = {
     "pulse_bpm_range": [122.0, 129.0],
@@ -487,6 +491,7 @@ def save_render_report(
         "recordings": dict(sorted(usage_by_recording.items())),
         "role_counts": role_counts,
         "control_snapshot": dict(LEARNING_WEIGHTS),
+        "representation_assist": REPRESENTATION_ASSIST.snapshot(),
         "temporal_profile": {
             key: round(float(value), 6)
             for key, value in d5_temporal_profile(dream_level).items()
@@ -689,6 +694,19 @@ def build_role_pools(objects):
     return pools
 
 
+def representation_continuity_factor(previous, candidate):
+    """Use learned continuity only inside validated non-drone role families."""
+    if previous is None or candidate is None:
+        return 1.0
+    previous_role = previous.get("role") or classify_object(previous)
+    candidate_role = candidate.get("role") or classify_object(candidate)
+    if previous_role != candidate_role or previous_role not in REPRESENTATION_ASSIST_ROLES:
+        return 1.0
+    return REPRESENTATION_ASSIST.continuity_factor(
+        previous.get("object_id"), candidate.get("object_id")
+    )
+
+
 CURRENT_MATERIAL_PLAN = None
 CURRENT_FORM_VARIANT = "baseline"
 
@@ -835,6 +853,7 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
 
         if previous is not None:
             score += continuity_distance(previous, obj) * 0.24 * learned_factor("transition_smoothness_weight", 5.0) * learned_factor("coherence_weight", 4.0)
+            score *= representation_continuity_factor(previous, obj)
 
         # Anti-stuck behaviour: recordings can return as motifs,
         # but the composer should not cling to the same few recordings forever.
@@ -1593,7 +1612,7 @@ def central_spectral_bloom(output, dream_level):
 
 
 def generate_soundscape(dream_level):
-    global CURRENT_MATERIAL_PLAN, CURRENT_FORM_VARIANT, LEARNING_WEIGHTS
+    global CURRENT_MATERIAL_PLAN, CURRENT_FORM_VARIANT, LEARNING_WEIGHTS, REPRESENTATION_ASSIST
     CURRENT_MATERIAL_PLAN = None
     CURRENT_FORM_VARIANT = "aesthetic_bridge" if dream_level == 5 else "baseline"
 
@@ -1601,6 +1620,11 @@ def generate_soundscape(dream_level):
     print("Render seed:", RENDER_SEED)
     print("Form variant:", CURRENT_FORM_VARIANT)
     LEARNING_WEIGHTS = load_learning_weights(dream_level)
+    representation_config = os.environ.get(
+        "HYPNOIA_REPRESENTATION_CONFIG", REPRESENTATION_CONFIG_FILE
+    )
+    REPRESENTATION_ASSIST = RepresentationAssist.from_config(representation_config)
+    print("Representation assist:", REPRESENTATION_ASSIST.snapshot())
     pulse_bpm = random.uniform(*D5_REFERENCE_TARGETS["pulse_bpm_range"]) if dream_level == 5 else 0.0
     if dream_level == 5:
         print("Reference pulse BPM:", round(pulse_bpm, 3))
