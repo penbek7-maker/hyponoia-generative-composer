@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements-dev.txt
+torch>=2.4,<3
+
