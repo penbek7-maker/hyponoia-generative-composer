@@ -29,6 +29,9 @@ reports/critic_recalibration_v2_1_summary.json
 
 # Generated memory index
 memory_index_v3.json
+library_manifest_v1.json
+hyponoia_user_config.json
+library_backups/
 
 # Old development files and backups
 Generators old/
