@@ -8,11 +8,15 @@ ID to a 32-dimensional embedding.
 
 ## Current boundary
 
-- No Gate 1 generator, Critic, feedback, OSC, or Max/MSP file is modified.
+- The Gate 1 release remains unchanged on `main`; all Phase 2 work stays on the
+  `phase2-representation-learning` branch.
 - Importing the module performs no training and changes no project data.
-- The encoder is not yet connected to the generator.
-- Learned embeddings remain opt-in experimental artifacts until listening
-  acceptance; they are never consumed by Gate 1 automatically.
+- Learned embeddings are connected only through the opt-in guarded assist and
+  are never consumed by Gate 1 automatically.
+- Composition feedback now affects bounded generator decisions and mix controls
+  only for the rated D1, D3 or D5 profile.
+- The first controlled D1 listening loop was accepted as a temporary baseline
+  on 1 September 2026. It does not make D3 or D5 inherit D1 preferences.
 
 ## Environment and tests
 
@@ -125,5 +129,8 @@ and development. Text can additionally request clearer layers and less
 low-frequency masking. The Critic remains diagnostic and cannot override an
 explicit human rating.
 
-These new controls are persisted now but remain sonically conservative until
-the controlled D1 A/B composition integration is validated.
+These controls are now connected to audible, bounded decisions: musical
+selection, density, development, synth presence, low-frequency masking, layer
+clarity, event activity and role-aware releases. The accepted D1-D listening
+baseline scored 3.5/5; it is evidence for the next training cycle, not a claim
+that the preference model is finished.

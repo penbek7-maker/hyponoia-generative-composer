@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
+import json
 import re
 import unicodedata
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from human_feedback_v1 import DEFAULT_LEARNING_PROFILE, DEFAULT_WEIGHTS, append_feedback_history
-from hyponoia_stability import apply_control_deltas, normalise_dream_level, parse_feedback_comment, utc_timestamp
+from hyponoia_stability import (
+    apply_control_deltas,
+    atomic_write_json,
+    normalise_dream_level,
+    parse_feedback_comment,
+    utc_timestamp,
+)
 
 
 COMPOSITION_CRITERIA = (
@@ -45,6 +54,7 @@ def directional_field_deltas(more: str, less: str) -> tuple[dict[str, float], li
         ("more", r"\b(?:synth\w*|συνθε\w*|ηλεκτρονικ\w*)\b", "increase_synthetic_material", {"synthetic_material_weight": 0.08}),
         ("more", r"\b(?:layers?|ηχητικα επιπεδα|στρωματα|υφες)\b", "increase_richness", {"richness_weight": 0.07}),
         ("more", r"\b(?:development|αναπτυξη|εξελιξη)\b", "increase_material_development", {"material_development_weight": 0.08}),
+        ("more", r"\b(?:energy|energetic|ενεργεια|ενεργητικ\w*)\b", "increase_activity", {"activity_weight": 0.07}),
         ("more", r"\b(?:smooth\w*|ομαλ\w* μεταβα\w*)\b", "increase_smoothness", {"transition_smoothness_weight": 0.08}),
         ("less", r"\b(?:bass|low end|low frequencies|μπασ\w*|χαμηλ\w* συχνοτ\w*)\b", "reduce_low_frequency_masking", {"low_frequency_control": 0.08}),
         ("less", r"\b(?:hidden|buried|κρυμμεν\w*|θαμμεν\w*)\b", "increase_layer_clarity", {"layer_clarity_weight": 0.08}),
@@ -165,3 +175,70 @@ def apply_composition_feedback(
     stored_event["applied_control_updates"] = updates
     append_feedback_history(updated, stored_event)
     return updated, updates
+
+
+def apply_feedback_file(
+    feedback_path: str | Path,
+    *,
+    profile_path: str | Path = "learning_profile.json",
+    event_output_path: str | Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Persist one review form as a bounded, D-level-specific learning update."""
+    source = Path(feedback_path)
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid composition feedback file: {source}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid composition feedback file: {source}")
+
+    target = Path(profile_path)
+    if target.exists():
+        try:
+            profile = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid learning profile: {target}") from exc
+        if not isinstance(profile, dict):
+            raise ValueError(f"Invalid learning profile: {target}")
+    else:
+        profile = copy.deepcopy(DEFAULT_LEARNING_PROFILE)
+
+    event = build_composition_feedback(
+        payload.get("ratings", {}),
+        dream_level=payload.get("dream_level"),
+        keep_as_baseline=bool(payload.get("keep_as_baseline", False)),
+        more=str(payload.get("more", "")),
+        less=str(payload.get("less", "")),
+        comment=str(payload.get("comment", "")),
+        render_name=payload.get("render_name"),
+    )
+    updated, changes = apply_composition_feedback(profile, event)
+    atomic_write_json(target, updated)
+    if event_output_path is not None:
+        atomic_write_json(event_output_path, event)
+    return updated, event, changes
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Apply one Hyponoia 1–5 composition review to its D-level profile."
+    )
+    parser.add_argument("feedback", type=Path, help="JSON review exported by the listening UI")
+    parser.add_argument("--profile", type=Path, default=Path("learning_profile.json"))
+    parser.add_argument("--event-output", type=Path)
+    args = parser.parse_args()
+    _profile, event, changes = apply_feedback_file(
+        args.feedback,
+        profile_path=args.profile,
+        event_output_path=args.event_output,
+    )
+    print(json.dumps({
+        "event_id": event["event_id"],
+        "dream_level": event["dream_level"],
+        "profile": str(args.profile),
+        "applied_controls": changes,
+    }, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

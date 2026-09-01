@@ -21,15 +21,17 @@ from hyponoia_stability import (
 )
 from representation_assist_v1 import RepresentationAssist
 
-MEMORY_FILE = "memory_index_v3.json"
-MEMORY_FOLDER = "alpha_memory"
-OUTPUT_FOLDER = "output"
-PROFILE_FILE = "alpha_profile.json"
-LEARNING_FILE = "learning_profile.json"
-SAMPLE_LEARNING_FILE = "sample_learning_profile.json"
-RENDER_REPORT_FILE = "render_report.json"
-RENDER_REPORT_FOLDER = "render_reports"
-GENERATOR_REVISION = "2026-08-21-d5-aesthetic-bridge-5.1"
+MEMORY_FILE = os.environ.get("HYPNOIA_MEMORY_FILE", "memory_index_v3.json")
+MEMORY_FOLDER = os.environ.get("HYPNOIA_MEMORY_FOLDER", "alpha_memory")
+OUTPUT_FOLDER = os.environ.get("HYPNOIA_OUTPUT_FOLDER", "output")
+PROFILE_FILE = os.environ.get("HYPNOIA_PROFILE_FILE", "alpha_profile.json")
+LEARNING_FILE = os.environ.get("HYPNOIA_LEARNING_FILE", "learning_profile.json")
+SAMPLE_LEARNING_FILE = os.environ.get(
+    "HYPNOIA_SAMPLE_LEARNING_FILE", "sample_learning_profile.json"
+)
+RENDER_REPORT_FILE = os.environ.get("HYPNOIA_RENDER_REPORT_FILE", "render_report.json")
+RENDER_REPORT_FOLDER = os.environ.get("HYPNOIA_RENDER_REPORT_FOLDER", "render_reports")
+GENERATOR_REVISION = "2026-09-01-d1-composition-feedback-2"
 REPRESENTATION_CONFIG_FILE = "representation_config.json"
 REPRESENTATION_ASSIST = RepresentationAssist.disabled()
 REPRESENTATION_ASSIST_ROLES = frozenset({"gesture", "texture", "impact", "noise"})
@@ -190,9 +192,16 @@ CORE_COUNT = 6
 EXTRA_D3_COUNT = 4
 EXTRA_D5_COUNT = 6
 
-# IMPORTANT: every render should be different.
-# We explicitly seed from current time + process id, so each run produces a new variation.
-RENDER_SEED = (datetime.now().microsecond + os.getpid() + random.SystemRandom().randint(0, 999999))
+# New renders vary by default. An explicit seed supports fair A/B listening,
+# where the learned feedback must be the only intended source of change.
+try:
+    RENDER_SEED = int(os.environ["HYPNOIA_RENDER_SEED"])
+except (KeyError, TypeError, ValueError):
+    RENDER_SEED = (
+        datetime.now().microsecond
+        + os.getpid()
+        + random.SystemRandom().randint(0, 999999)
+    )
 random.seed(RENDER_SEED)
 np.random.seed(RENDER_SEED % (2**32 - 1))
 
@@ -234,6 +243,48 @@ def learned_factor(name, sensitivity=5.0, lo=0.65, hi=1.45):
     value = LEARNING_WEIGHTS.get(name, 1.0)
     factor = float(np.exp((value - 1.0) * sensitivity))
     return max(lo, min(hi, factor))
+
+
+def composition_feedback_audio_snapshot():
+    """Expose the bounded audio consequences of the active D-level feedback."""
+    low_control = learned_factor("low_frequency_control", 3.0, 0.72, 1.55)
+    clarity = learned_factor("layer_clarity_weight", 3.0, 0.75, 1.50)
+    synth = learned_factor("synthetic_material_weight", 4.0, 0.78, 1.60)
+    development = learned_factor("material_development_weight", 2.8, 0.80, 1.55)
+    activity = learned_factor("activity_weight", 1.3, 0.92, 1.18)
+    release = learned_factor("transition_smoothness_weight", 3.0, 0.88, 1.50)
+    return {
+        "low_frequency_gain": float(1.0 / low_control),
+        "low_mid_masking_gain": float(1.0 / max(1.0, clarity)),
+        "stereo_width": float(max(0.82, min(1.24, 1.0 + 0.28 * (clarity - 1.0)))),
+        "reverb_clarity_gain": float(1.0 / np.sqrt(max(0.75, clarity))),
+        "synthetic_layer_gain": float(max(0.0, synth - 1.0)),
+        "development_drive": float(development),
+        "event_activity_gain": float(activity),
+        "release_smoothness": float(release),
+        "release_tail_strength": float(max(0.0, release - 1.0)),
+        "related_layer_overlap_strength": float(max(0.0, release - 1.0)),
+    }
+
+
+def apply_mix_feedback_controls(output):
+    """Reduce low masking and separate layers without changing render duration."""
+    snapshot = composition_feedback_audio_snapshot()
+    low_gain = snapshot["low_frequency_gain"]
+    low_mid_gain = snapshot["low_mid_masking_gain"]
+    processed = np.asarray(output, dtype=np.float32).copy()
+
+    for channel in range(processed.shape[1]):
+        low = butter_filter(processed[:, channel], "lowpass", 170)
+        low_mid = butter_filter(processed[:, channel], "lowpass", 520) - low
+        processed[:, channel] += low * (low_gain - 1.0)
+        processed[:, channel] += low_mid * (low_mid_gain - 1.0) * 0.62
+
+    mid = (processed[:, 0] + processed[:, 1]) * 0.5
+    side = (processed[:, 0] - processed[:, 1]) * 0.5 * snapshot["stereo_width"]
+    processed[:, 0] = mid + side
+    processed[:, 1] = mid - side
+    return processed.astype(np.float32)
 
 
 def dream_activity_multiplier(dream_level):
@@ -493,6 +544,7 @@ def save_render_report(
         "recordings": dict(sorted(usage_by_recording.items())),
         "role_counts": role_counts,
         "control_snapshot": dict(LEARNING_WEIGHTS),
+        "composition_feedback_audio": composition_feedback_audio_snapshot(),
         "representation_assist": REPRESENTATION_ASSIST.snapshot(),
         "temporal_profile": {
             key: round(float(value), 6)
@@ -1036,10 +1088,14 @@ def make_ambient_bed(output, dream_level):
         freqs = [55, 82.5, 110, 165, 220]
     amps = [0.024, 0.020, 0.016, 0.011, 0.007]
 
+    feedback_audio = composition_feedback_audio_snapshot()
+    low_gain = np.sqrt(feedback_audio["low_frequency_gain"])
+
     for freq, amp in zip(freqs, amps):
         phase = random.random() * np.pi * 2
         slow = 0.5 + 0.5 * np.sin(2 * np.pi * t / random.uniform(35, 80))
-        tone = np.sin(2 * np.pi * freq * t + phase) * amp * slow
+        frequency_gain = low_gain if freq < 125 else 1.0
+        tone = np.sin(2 * np.pi * freq * t + phase) * amp * slow * frequency_gain
 
         if dream_level >= 5:
             tone += np.sin(2 * np.pi * (freq * 1.5) * t + phase) * amp * 0.16
@@ -1048,6 +1104,24 @@ def make_ambient_bed(output, dream_level):
         ambient_gain = learned_factor("ambient_weight", 4.0)
         ambient_gain *= d5_temporal_profile(dream_level)["ambient_scale"]
         add_to_output(output, tone.astype(np.float32), 0, ambient_gain, pan)
+
+    # Explicit synth presence requested by the listener. Neutral feedback adds
+    # nothing, so the Gate 1 sound remains unchanged without an explicit request.
+    synth_gain = feedback_audio["synthetic_layer_gain"]
+    if synth_gain > 1e-6:
+        synth_freqs = scale_frequencies(low_midi=48, high_midi=79, count=4)
+        if synth_freqs is None:
+            synth_freqs = [130.81, 196.00, 261.63, 392.00]
+        form_env = 0.35 + 0.65 * np.sin(np.pi * np.clip(t / OUTPUT_DURATION, 0.0, 1.0)) ** 1.6
+        motion_rate = 0.035 + 0.018 * feedback_audio["development_drive"]
+        for index, freq in enumerate(synth_freqs):
+            phase = random.random() * np.pi * 2
+            motion = 0.62 + 0.38 * np.sin(2 * np.pi * motion_rate * t + phase)
+            tone = np.sin(2 * np.pi * freq * t + phase)
+            tone += 0.24 * np.sin(2 * np.pi * freq * 2.0 * t + phase * 0.7)
+            tone *= (0.010 + 0.003 * index) * synth_gain * form_env * motion
+            pan = (-0.62, 0.45, -0.28, 0.68)[index % 4]
+            add_to_output(output, tone.astype(np.float32), 0, 1.0, pan)
 
 
 
@@ -1090,6 +1164,7 @@ def low_resonance_pulse(length, dream_level):
     tonal_freqs = scale_frequencies(low_midi=29, high_midi=45, count=3)
     base_freqs = tonal_freqs if tonal_freqs is not None else [48, 72, 96]
     base_amp = 0.0045 if dream_level == 1 else (0.0060 if dream_level == 3 else 0.0070)
+    base_amp *= composition_feedback_audio_snapshot()["low_frequency_gain"]
 
     for freq in base_freqs:
         phase = random.random() * np.pi * 2
@@ -1142,9 +1217,11 @@ def final_mix(output, dream_level):
     output[:, 1] += (np.roll(air, int(0.019 * TARGET_SR)) * random.uniform(0.55, 0.85) + low * 0.82) * ambient_scale
 
     output -= np.mean(output, axis=0)
+    output = apply_mix_feedback_controls(output)
 
     # Gentle glue reverb. A little more in D5, but still controlled.
     wet = {1: 0.095, 3: 0.135, 5: 0.175}[dream_level] * ambient_scale
+    wet *= composition_feedback_audio_snapshot()["reverb_clarity_gain"]
     output = simple_stereo_reverb(output, wet=wet)
 
     # Soft saturation for body, less aggressive than previous versions.
@@ -1325,6 +1402,90 @@ def continuity_edge_guard(frag, role, dream_level):
     frag[-1] = 0.0
     return frag.astype(np.float32)
 
+
+def feedback_release_guard(frag, role):
+    """Add an audible, role-aware release only after explicit smoothness feedback."""
+    if len(frag) < 32:
+        return frag.astype(np.float32)
+    smoothness = composition_feedback_audio_snapshot()["release_smoothness"]
+    request = max(0.0, smoothness - 1.0)
+    if request <= 1e-6:
+        return frag.astype(np.float32)
+
+    base_release = {
+        "gesture": 0.85,
+        "impact": 0.60,
+        "noise": 1.45,
+        "texture": 3.20,
+        "resonance": 4.80,
+    }.get(role, 1.20)
+    release_sec = base_release * (0.38 + 1.95 * request)
+    release_n = min(int(release_sec * TARGET_SR), len(frag) // 2)
+    if release_n > 8:
+        curve = np.cos(np.linspace(0.0, np.pi / 2.0, release_n)) ** (1.18 + 0.45 * request)
+        frag[-release_n:] *= curve.astype(np.float32)
+    frag[-1] = 0.0
+    return frag.astype(np.float32)
+
+
+def feedback_release_tail(frag, role):
+    """Carry a departing layer into damped echoes so it leaves through continuity."""
+    if len(frag) < 32:
+        return frag.astype(np.float32)
+    smoothness = composition_feedback_audio_snapshot()["release_smoothness"]
+    request = max(0.0, smoothness - 1.0)
+    if request <= 1e-6:
+        return frag.astype(np.float32)
+
+    base_tail_sec = {
+        "gesture": 1.00,
+        "impact": 0.75,
+        "noise": 2.00,
+        "texture": 3.50,
+        "resonance": 5.00,
+    }.get(role, 1.50)
+    tail_sec = base_tail_sec * (0.55 + 1.10 * request)
+    delay_seconds = (tail_sec * 0.22, tail_sec * 0.55, tail_sec)
+    max_delay = max(1, int(delay_seconds[-1] * TARGET_SR))
+    output = np.zeros(len(frag) + max_delay, dtype=np.float32)
+    output[:len(frag)] += frag
+
+    cutoff = 7200 if role in ("gesture", "impact") else 4800
+    damped = butter_filter(frag, "lowpass", cutoff)
+    gain_scale = 0.65 + 0.70 * request
+    for delay_sec, gain in zip(delay_seconds, (0.16, 0.10, 0.055)):
+        delay = max(1, int(delay_sec * TARGET_SR))
+        output[delay:delay + len(damped)] += damped * gain * gain_scale
+    return output.astype(np.float32)
+
+
+def feedback_continuity_start(start, duration, role, previous_layer_end):
+    """Overlap the next related layer after explicit complaints about abrupt exits."""
+    if previous_layer_end is None:
+        return float(start)
+    smoothness = composition_feedback_audio_snapshot()["release_smoothness"]
+    request = max(0.0, smoothness - 1.0)
+    if request <= 1e-6:
+        return float(start)
+
+    gap = float(start) - float(previous_layer_end)
+    desired_overlap = {
+        "gesture": 0.20,
+        "impact": 0.16,
+        "noise": 0.40,
+        "texture": 1.40,
+        "resonance": 2.20,
+    }.get(role, 0.45) * request
+    if gap >= 0.0:
+        # Nearby phrases crossfade. Larger gaps retain breathing room but become
+        # less empty, so continuity never turns into a constant wall of sound.
+        if gap <= 5.0:
+            adjusted = float(start) - min(gap + desired_overlap, max(0.25, duration * 0.22))
+        else:
+            adjusted = float(start) - min(gap * 0.22 * request, 2.0)
+        return max(0.0, adjusted)
+    return float(start)
+
 def transform_fragment_for_role(frag, role, dream_level):
     """
     Different musical functions receive different treatments.
@@ -1404,6 +1565,7 @@ def transform_fragment_for_role(frag, role, dream_level):
         amp /= learned_factor("impact_penalty", 4.0)
     elif role in ["texture", "resonance"]:
         amp *= learned_factor("ambient_weight", 2.5)
+    amp *= composition_feedback_audio_snapshot()["event_activity_gain"]
     return frag, amp
 
 
@@ -1751,7 +1913,9 @@ def generate_soundscape(dream_level):
             # Final smoothing pass: delays first, then an organic emergence envelope,
             # so phrases feel as if they grow from previous material rather than being inserted.
             frag = musical_delay_tail(frag, role, dream_level)
+            frag = feedback_release_tail(frag, role)
             frag = organic_emergence(frag, role, dream_level, obj.get("features", {}))
+            frag = feedback_release_guard(frag, role)
             frag = continuity_edge_guard(frag, role, dream_level)
 
             # Positioning: D5 uses phrase lanes so layers stay perceptually distinct.
@@ -1797,6 +1961,21 @@ def generate_soundscape(dream_level):
                 dream_level,
                 pulse_bpm,
             )
+            if role in ["texture", "resonance"]:
+                sustained_ends = [
+                    role_last_end[name]
+                    for name in ("texture", "resonance")
+                    if role_last_end[name] is not None
+                ]
+                continuity_reference = max(sustained_ends) if sustained_ends else None
+            else:
+                continuity_reference = role_last_end[role]
+            start = feedback_continuity_start(
+                start,
+                len(frag) / TARGET_SR,
+                role,
+                continuity_reference,
+            )
 
             # Spatial identity: D5 separates roles into recognisable regions/layers.
             if dream_level == 5:
@@ -1815,6 +1994,9 @@ def generate_soundscape(dream_level):
                     pan = random.uniform(-0.95, 0.95)
                 else:
                     pan = random.uniform(-0.60, 0.60)
+
+            pan *= composition_feedback_audio_snapshot()["stereo_width"]
+            pan = max(-0.98, min(0.98, pan))
 
             add_to_output(output, frag, start, amp, pan)
             event_duration = len(frag) / TARGET_SR
