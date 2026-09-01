@@ -108,6 +108,102 @@ def test_composition_feedback_reduces_low_masking_and_opens_layers(monkeypatch):
     assert snapshot["development_drive"] > 1.0
 
 
+def test_arpeggio_feedback_creates_bounded_level_specific_audio(monkeypatch):
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    silent = generator.synth_arpeggio_layer(3, duration=4.0)
+    assert silent.shape == (generator.TARGET_SR * 4, 2)
+    assert np.count_nonzero(silent) == 0
+
+    requested = dict(neutral)
+    requested["arpeggio_weight"] = 1.10
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    d3 = generator.synth_arpeggio_layer(3, duration=40.0)
+    d5 = generator.synth_arpeggio_layer(5, pulse_bpm=126.0, duration=40.0)
+    assert np.isfinite(d3).all() and np.isfinite(d5).all()
+    assert np.max(np.abs(d3)) < 0.08
+    assert np.max(np.abs(d5)) < 0.08
+    assert np.count_nonzero(d3) > 0
+    assert not np.array_equal(d3, d5)
+
+
+def test_arpeggio_phrases_emerge_gradually():
+    for dream_level in (1, 3, 5):
+        early = generator.arpeggio_phrase_growth(dream_level, 0.1)
+        middle = generator.arpeggio_phrase_growth(dream_level, 0.5)
+        late = generator.arpeggio_phrase_growth(dream_level, 0.9)
+        assert 0.0 < early < middle < late <= 1.0
+
+
+def test_long_layers_rotate_between_levels_and_repeated_sources_are_penalised(monkeypatch):
+    weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    weights["long_layer_diversity_weight"] = 1.10
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
+    by_family = {}
+    for index in range(100):
+        recording = f"source-{index}.wav"
+        family = generator.deterministic_group(
+            f"hyponoia-long-layer-v1:{recording}", groups=3
+        )
+        by_family.setdefault(family, recording)
+        if len(by_family) == 3:
+            break
+
+    for dream_level, target_family in ((1, 0), (3, 1), (5, 2)):
+        preferred = {
+            "recording": by_family[target_family],
+            "duration": 8.0,
+            "role": "resonance",
+            "features": {},
+        }
+        other = {
+            "recording": by_family[(target_family + 1) % 3],
+            "duration": 8.0,
+            "role": "resonance",
+            "features": {},
+        }
+        preferred_factor = generator.long_layer_diversity_factor(
+            preferred, dream_level, usage_counts={}
+        )
+        other_factor = generator.long_layer_diversity_factor(
+            other, dream_level, usage_counts={}
+        )
+        repeated_factor = generator.long_layer_diversity_factor(
+            preferred, dream_level, usage_counts={preferred["recording"]: 5}
+        )
+        very_long = dict(preferred, duration=22.0)
+        very_long_factor = generator.long_layer_diversity_factor(
+            very_long, dream_level, usage_counts={}
+        )
+        assert preferred_factor < other_factor
+        assert repeated_factor > preferred_factor
+        assert very_long_factor > preferred_factor
+
+
+def test_explicit_long_layer_diversity_bounds_and_varies_sustained_windows(monkeypatch):
+    fragment = np.linspace(-1.0, 1.0, generator.TARGET_SR * 30, dtype=np.float32)
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert np.array_equal(
+        generator.bound_sustained_fragment(fragment, "resonance", 1), fragment
+    )
+
+    requested = dict(neutral)
+    requested["long_layer_diversity_weight"] = 1.10
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    d1 = generator.bound_sustained_fragment(fragment, "resonance", 1)
+    d3 = generator.bound_sustained_fragment(fragment, "resonance", 3)
+    d5 = generator.bound_sustained_fragment(fragment, "resonance", 5)
+    assert len(d5) < len(d3) < len(d1) < len(fragment)
+    assert d1[0] < d3[0] < d5[0]
+
+
+def test_clearer_base_reverb_is_bounded_and_level_ordered():
+    assert generator.base_reverb_wet(1) < generator.base_reverb_wet(3)
+    assert generator.base_reverb_wet(3) < generator.base_reverb_wet(5)
+    assert generator.base_reverb_wet(5) <= 0.125
+
+
 def test_explicit_smoothness_feedback_adds_role_aware_release(monkeypatch):
     fragment = np.ones(generator.TARGET_SR * 3, dtype=np.float32)
     neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)

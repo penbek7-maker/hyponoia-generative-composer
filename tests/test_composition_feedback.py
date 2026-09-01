@@ -54,6 +54,35 @@ def test_more_energy_maps_to_bounded_activity_control():
     assert event["requested_control_deltas"]["transition_smoothness_weight"] > 0.08
 
 
+def test_arpeggio_blur_and_repeated_long_layers_become_explicit_controls():
+    event = build_composition_feedback(
+        RATINGS,
+        dream_level="D3",
+        keep_as_baseline=False,
+        more="Περισσότερα synthesizers, arpeggios και μουσικότητα.",
+        less=(
+            "Λιγότερη θολούρα στη μίξη και λιγότερη επανάληψη "
+            "των ίδιων μεγάλων συρτών layers."
+        ),
+    )
+    requested = event["requested_control_deltas"]
+    assert requested["arpeggio_weight"] == pytest.approx(0.10)
+    assert requested["layer_clarity_weight"] == pytest.approx(0.08)
+    assert requested["long_layer_diversity_weight"] == pytest.approx(0.10)
+    assert requested["synthetic_material_weight"] > 0.08
+
+
+def test_pluralism_requests_bounded_palette_variety():
+    event = build_composition_feedback(
+        RATINGS,
+        dream_level="D5",
+        keep_as_baseline=False,
+        more="λίγο περισσότερη ποικιλία και πλουραλισμό",
+    )
+    assert event["requested_control_deltas"]["exploration_weight"] >= 0.06
+    assert event["requested_control_deltas"]["repetition_control"] >= 0.03
+
+
 def test_listener_ratings_build_bounded_level_specific_event():
     event = build_composition_feedback(
         RATINGS,
