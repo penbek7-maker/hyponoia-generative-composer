@@ -76,6 +76,72 @@ def test_dream_activity_and_bright_event_smoothing_are_ordered(monkeypatch):
     assert bright["fade_out"] > dark["fade_out"]
 
 
+def test_composition_feedback_reduces_low_masking_and_opens_layers(monkeypatch):
+    sample_rate = generator.TARGET_SR
+    time = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    low = np.sin(2 * np.pi * 80.0 * time).astype(np.float32) * 0.40
+    detail = np.sin(2 * np.pi * 1200.0 * time).astype(np.float32) * 0.12
+    stereo = np.stack([low + detail, low - detail], axis=1)
+
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    neutral_output = generator.apply_mix_feedback_controls(stereo)
+
+    requested = dict(neutral)
+    requested.update({
+        "low_frequency_control": 1.12,
+        "layer_clarity_weight": 1.12,
+        "synthetic_material_weight": 1.08,
+        "material_development_weight": 1.10,
+    })
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    adjusted = generator.apply_mix_feedback_controls(stereo)
+    snapshot = generator.composition_feedback_audio_snapshot()
+
+    neutral_low = generator.butter_filter(neutral_output[:, 0], "lowpass", 170)
+    adjusted_low = generator.butter_filter(adjusted[:, 0], "lowpass", 170)
+    neutral_side = (neutral_output[:, 0] - neutral_output[:, 1]) * 0.5
+    adjusted_side = (adjusted[:, 0] - adjusted[:, 1]) * 0.5
+    assert np.sqrt(np.mean(adjusted_low ** 2)) < np.sqrt(np.mean(neutral_low ** 2))
+    assert np.sqrt(np.mean(adjusted_side ** 2)) > np.sqrt(np.mean(neutral_side ** 2))
+    assert snapshot["synthetic_layer_gain"] > 0
+    assert snapshot["development_drive"] > 1.0
+
+
+def test_explicit_smoothness_feedback_adds_role_aware_release(monkeypatch):
+    fragment = np.ones(generator.TARGET_SR * 3, dtype=np.float32)
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    unchanged = generator.feedback_release_guard(fragment.copy(), "texture")
+    assert np.array_equal(unchanged, fragment)
+
+    smoother = dict(neutral)
+    smoother["transition_smoothness_weight"] = 1.15
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", smoother)
+    released = generator.feedback_release_guard(fragment.copy(), "texture")
+    assert released[-1] == 0.0
+    assert released[-generator.TARGET_SR // 2] < 0.9
+    assert released[0] == 1.0
+
+
+def test_explicit_smoothness_adds_damped_tail_and_related_overlap(monkeypatch):
+    fragment = np.linspace(-0.4, 0.4, generator.TARGET_SR, dtype=np.float32)
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert np.array_equal(generator.feedback_release_tail(fragment, "texture"), fragment)
+    assert generator.feedback_continuity_start(8.0, 4.0, "texture", 6.0) == 8.0
+
+    smoother = dict(neutral)
+    smoother["transition_smoothness_weight"] = 1.15
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", smoother)
+    tailed = generator.feedback_release_tail(fragment, "texture")
+    overlapped = generator.feedback_continuity_start(8.0, 4.0, "texture", 6.0)
+    assert len(tailed) > len(fragment)
+    assert np.isfinite(tailed).all()
+    assert np.any(np.abs(tailed[len(fragment):]) > 0)
+    assert 0.0 <= overlapped < 8.0
+
+
 def test_d5_energy_and_character_controls_are_level_specific(monkeypatch):
     neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)

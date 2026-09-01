@@ -1,8 +1,13 @@
 import copy
+import json
 
 import pytest
 
-from composition_feedback_v1 import apply_composition_feedback, build_composition_feedback
+from composition_feedback_v1 import (
+    apply_composition_feedback,
+    apply_feedback_file,
+    build_composition_feedback,
+)
 from human_feedback_v1 import DEFAULT_LEARNING_PROFILE
 from hyponoia_stability import parse_feedback_comment
 
@@ -34,6 +39,19 @@ def test_greek_feedback_recognises_compositional_intents():
         "increase_layer_clarity",
         "increase_smoothness",
     } <= intents
+
+
+def test_more_energy_maps_to_bounded_activity_control():
+    event = build_composition_feedback(
+        RATINGS,
+        dream_level="D1",
+        keep_as_baseline=False,
+        more="συνθετικό υλικό και λίγη περισσότερη ενέργεια",
+        less="να φεύγουν λιγότερο απότομα και ομαλά",
+    )
+    assert event["requested_control_deltas"]["activity_weight"] == pytest.approx(0.07)
+    assert event["requested_control_deltas"]["synthetic_material_weight"] > 0.08
+    assert event["requested_control_deltas"]["transition_smoothness_weight"] > 0.08
 
 
 def test_listener_ratings_build_bounded_level_specific_event():
@@ -74,3 +92,33 @@ def test_composition_feedback_rejects_missing_or_out_of_range_rating():
     invalid = dict(RATINGS, musicality=0)
     with pytest.raises(ValueError, match="between 1 and 5"):
         build_composition_feedback(invalid, dream_level=1, keep_as_baseline=False)
+
+
+def test_feedback_file_persists_only_the_requested_level(tmp_path):
+    feedback_path = tmp_path / "d1_review.json"
+    profile_path = tmp_path / "learning_profile.json"
+    event_path = tmp_path / "d1_event.json"
+    feedback_path.write_text(json.dumps({
+        "dream_level": "D1",
+        "keep_as_baseline": False,
+        "render_name": "D1-A",
+        "ratings": RATINGS,
+        "more": "μουσικότητα και ηχητικά επίπεδα",
+        "less": "μπάσα και κρυμμένα πράγματα",
+        "comment": "έτσι και έτσι, οκ για πρώτη φορά",
+    }), encoding="utf-8")
+
+    profile, event, changes = apply_feedback_file(
+        feedback_path,
+        profile_path=profile_path,
+        event_output_path=event_path,
+    )
+
+    assert changes
+    assert event["dream_level"] == "D1"
+    assert profile["level_weights"]["D1"]["low_frequency_control"] > 1.0
+    assert profile["level_weights"]["D1"]["layer_clarity_weight"] > 1.0
+    assert profile["level_weights"]["D3"] == DEFAULT_LEARNING_PROFILE["level_weights"]["D3"]
+    assert profile["level_weights"]["D5"] == DEFAULT_LEARNING_PROFILE["level_weights"]["D5"]
+    assert profile_path.exists()
+    assert event_path.exists()
