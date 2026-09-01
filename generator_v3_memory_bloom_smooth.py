@@ -31,7 +31,7 @@ SAMPLE_LEARNING_FILE = os.environ.get(
 )
 RENDER_REPORT_FILE = os.environ.get("HYPNOIA_RENDER_REPORT_FILE", "render_report.json")
 RENDER_REPORT_FOLDER = os.environ.get("HYPNOIA_RENDER_REPORT_FOLDER", "render_reports")
-GENERATOR_REVISION = "2026-09-01-d1-composition-feedback-2"
+GENERATOR_REVISION = "2026-09-01-mix-long-layer-arpeggio-1"
 REPRESENTATION_CONFIG_FILE = "representation_config.json"
 REPRESENTATION_ASSIST = RepresentationAssist.disabled()
 REPRESENTATION_ASSIST_ROLES = frozenset({"gesture", "texture", "impact", "noise"})
@@ -56,6 +56,8 @@ DEFAULT_LEARNING_WEIGHTS = {
     "exploration_weight": 1.0,
     "repetition_control": 1.0,
     "synthetic_material_weight": 1.0,
+    "arpeggio_weight": 1.0,
+    "long_layer_diversity_weight": 1.0,
     "activity_weight": 1.0,
     "material_development_weight": 1.0,
     "low_frequency_control": 1.0,
@@ -250,6 +252,10 @@ def composition_feedback_audio_snapshot():
     low_control = learned_factor("low_frequency_control", 3.0, 0.72, 1.55)
     clarity = learned_factor("layer_clarity_weight", 3.0, 0.75, 1.50)
     synth = learned_factor("synthetic_material_weight", 4.0, 0.78, 1.60)
+    arpeggio = learned_factor("arpeggio_weight", 4.0, 0.78, 1.65)
+    long_layer_diversity = learned_factor(
+        "long_layer_diversity_weight", 3.0, 0.82, 1.50
+    )
     development = learned_factor("material_development_weight", 2.8, 0.80, 1.55)
     activity = learned_factor("activity_weight", 1.3, 0.92, 1.18)
     release = learned_factor("transition_smoothness_weight", 3.0, 0.88, 1.50)
@@ -259,6 +265,8 @@ def composition_feedback_audio_snapshot():
         "stereo_width": float(max(0.82, min(1.24, 1.0 + 0.28 * (clarity - 1.0)))),
         "reverb_clarity_gain": float(1.0 / np.sqrt(max(0.75, clarity))),
         "synthetic_layer_gain": float(max(0.0, synth - 1.0)),
+        "arpeggio_layer_gain": float(max(0.0, arpeggio - 1.0)),
+        "long_layer_rotation": float(long_layer_diversity),
         "development_drive": float(development),
         "event_activity_gain": float(activity),
         "release_smoothness": float(release),
@@ -427,6 +435,34 @@ def d5_selection_character_factor(obj, dream_level):
     # Keep some present-day preference for musical synthetic material, but
     # retain the broader, airier palette of the listener-preferred baseline.
     return float(1.0 + (focused - 1.0) * 0.55)
+
+
+def long_layer_diversity_factor(obj, dream_level, usage_counts=None):
+    """Rotate sustained material between D-levels and within one render.
+
+    Lower scores are preferred by the selector. The deterministic family bias
+    gives D1, D3 and D5 different sustained-source tendencies without excluding
+    any recording. Explicit listener feedback strengthens the rotation.
+    """
+    role = obj.get("role") or classify_object(obj)
+    duration = float(obj.get("duration", 0.0))
+    if role not in {"texture", "resonance"} or duration < 4.0:
+        return 1.0
+
+    target_family = {1: 0, 3: 1, 5: 2}[dream_level]
+    source_family = deterministic_group(
+        f"hyponoia-long-layer-v1:{obj.get('recording', '')}", groups=3
+    )
+    rotation = composition_feedback_audio_snapshot()["long_layer_rotation"]
+    affinity = 0.88 if source_family == target_family else 1.08
+    affinity = 1.0 + (affinity - 1.0) * rotation
+
+    previous_uses = 0 if usage_counts is None else usage_counts.get(obj.get("recording"), 0)
+    reuse_penalty = 1.0 + min(0.65, 0.11 * max(0, int(previous_uses))) * rotation
+    # Sustained objects remain welcome, but very long sources should not
+    # dominate every section after stretching, emergence and delay tails.
+    duration_penalty = 1.0 + min(0.55, max(0.0, duration - 7.0) * 0.045) * rotation
+    return float(max(0.58, min(2.4, affinity * reuse_penalty * duration_penalty)))
 
 
 def material_plan_limits(dream_level):
@@ -917,6 +953,9 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
         dur = obj["duration"]
         role = obj.get("role", classify_object(obj))
         f = obj["features"]
+        score *= long_layer_diversity_factor(
+            obj, dream_level, usage_counts=usage_counts
+        )
 
         # Memory v3 role fit: lower score for objects that compositionally fit the requested role.
         if desired_role == "resonance":
@@ -1079,13 +1118,94 @@ def add_to_output(output, mono, start_sec, amp, pan):
     output[start:start + len(stereo)] += stereo
 
 
-def make_ambient_bed(output, dream_level):
+def arpeggio_frequencies(dream_level):
+    """Return a level-specific pitch collection without imposing tonality."""
+    count = {1: 4, 3: 6, 5: 8}[dream_level]
+    tuned = scale_frequencies(low_midi=48, high_midi=78, count=count)
+    if tuned is not None:
+        return tuned
+    free_midi = {
+        1: (48, 55, 60, 64),
+        3: (50, 55, 59, 62, 67, 72),
+        5: (48, 51, 55, 58, 62, 65, 69, 72),
+    }
+    return [midi_to_hz(note) for note in free_midi[dream_level]]
+
+
+def arpeggio_phrase_growth(dream_level, progress):
+    """Let synth phrases emerge gradually instead of arriving at full level."""
+    progress = max(0.0, min(1.0, float(progress)))
+    floor = {1: 0.72, 3: 0.60, 5: 0.46}[dream_level]
+    return float(floor + (1.0 - floor) * progress ** 0.72)
+
+
+def synth_arpeggio_layer(dream_level, pulse_bpm=0.0, duration=None):
+    """Build a bounded phrase-based arpeggio requested by human feedback."""
+    duration = OUTPUT_DURATION if duration is None else max(0.0, float(duration))
+    length = int(duration * TARGET_SR)
+    layer = np.zeros((length, 2), dtype=np.float32)
+    gain = composition_feedback_audio_snapshot()["arpeggio_layer_gain"]
+    if gain <= 1e-6 or length < 32:
+        return layer
+
+    bpm = {1: 66.0, 3: 92.0, 5: float(pulse_bpm) if pulse_bpm > 0 else 126.0}[dream_level]
+    subdivision = {1: 1.0, 3: 0.5, 5: 0.5}[dream_level]
+    step_sec = (60.0 / bpm) * subdivision
+    note_sec = min(1.15, max(0.18, step_sec * {1: 1.18, 3: 1.05, 5: 0.88}[dream_level]))
+    phrase_steps = {1: 4, 3: 8, 5: 12}[dream_level]
+    rest_steps = {1: 3, 3: 2, 5: 2}[dream_level]
+    patterns = {
+        1: (0, 2, 1, 3),
+        3: (0, 2, 4, 1, 3, 5, 4, 2),
+        5: (0, 2, 4, 6, 3, 5, 7, 4, 6, 2, 5, 1),
+    }
+    frequencies = arpeggio_frequencies(dream_level)
+    pattern = patterns[dream_level]
+    rng = random.Random(RENDER_SEED + dream_level * 104729)
+    start_sec = {1: 24.0, 3: 16.0, 5: 10.0}[dream_level]
+    end_sec = max(start_sec, duration - {1: 18.0, 3: 12.0, 5: 10.0}[dream_level])
+    note_index = 0
+    level_amp = {1: 0.010, 3: 0.0125, 5: 0.014}[dream_level] * gain
+
+    while start_sec < end_sec:
+        pitch_index = pattern[note_index % len(pattern)] % len(frequencies)
+        freq = frequencies[pitch_index]
+        phase = rng.random() * np.pi * 2.0
+        samples = max(16, int(note_sec * TARGET_SR))
+        t = np.arange(samples, dtype=np.float32) / TARGET_SR
+        envelope_phase = np.sin(
+            np.linspace(0.0, np.pi, samples, dtype=np.float32)
+        )
+        envelope = np.clip(envelope_phase, 0.0, 1.0) ** 1.7
+        tone = np.sin(2 * np.pi * freq * t + phase)
+        tone += 0.22 * np.sin(2 * np.pi * freq * 2.0 * t + phase * 0.71)
+        tone += 0.07 * np.sin(2 * np.pi * freq * 3.0 * t + phase * 1.13)
+        growth = arpeggio_phrase_growth(
+            dream_level, start_sec / max(end_sec, 1e-6)
+        )
+        tone *= envelope * level_amp * growth
+        pan = max(-0.72, min(0.72, -0.55 + 1.10 * (pitch_index / max(1, len(frequencies) - 1))))
+        add_to_output(layer, tone.astype(np.float32), start_sec, 1.0, pan)
+
+        note_index += 1
+        start_sec += step_sec
+        if note_index % phrase_steps == 0:
+            start_sec += rest_steps * step_sec
+
+    return layer
+
+
+def make_ambient_bed(output, dream_level, pulse_bpm=0.0):
     duration = OUTPUT_DURATION
     t = np.linspace(0, duration, OUTPUT_DURATION * TARGET_SR, endpoint=False)
 
     freqs = scale_frequencies(low_midi=33, high_midi=57, count=5)
     if freqs is None:
-        freqs = [55, 82.5, 110, 165, 220]
+        freqs = {
+            1: [55.00, 82.41, 110.00, 164.81, 220.00],
+            3: [61.74, 92.50, 123.47, 185.00, 246.94],
+            5: [49.00, 73.42, 98.00, 146.83, 196.00],
+        }[dream_level]
     amps = [0.024, 0.020, 0.016, 0.011, 0.007]
 
     feedback_audio = composition_feedback_audio_snapshot()
@@ -1122,6 +1242,8 @@ def make_ambient_bed(output, dream_level):
             tone *= (0.010 + 0.003 * index) * synth_gain * form_env * motion
             pan = (-0.62, 0.45, -0.28, 0.68)[index % 4]
             add_to_output(output, tone.astype(np.float32), 0, 1.0, pan)
+
+    output += synth_arpeggio_layer(dream_level, pulse_bpm=pulse_bpm)
 
 
 
@@ -1198,10 +1320,24 @@ def simple_stereo_reverb(output, wet=0.09):
         rev[n:, 0] += rev[:-n, 1] * gain
         rev[n:, 1] += rev[:-n, 0] * gain
 
-    rev[:, 0] = butter_filter(rev[:, 0], "lowpass", 9500)
-    rev[:, 1] = butter_filter(rev[:, 1], "lowpass", 9500)
+    # Keep the shared space out of the bass/low-mid region. This preserves body
+    # in the dry signal while preventing long layers from turning into a wash.
+    for channel in range(2):
+        reverberant_bass = butter_filter(rev[:, channel], "lowpass", 180)
+        reverberant_low_mid = (
+            butter_filter(rev[:, channel], "lowpass", 650) - reverberant_bass
+        )
+        rev[:, channel] -= reverberant_bass * 0.72
+        rev[:, channel] -= reverberant_low_mid * 0.22
+        rev[:, channel] = butter_filter(rev[:, channel], "lowpass", 9500)
 
     return (output * (1.0 - wet) + rev * wet).astype(np.float32)
+
+
+def base_reverb_wet(dream_level):
+    """Clearer level-specific room amount before listener clarity feedback."""
+    return {1: 0.075, 3: 0.100, 5: 0.125}[dream_level]
+
 
 def final_mix(output, dream_level):
     # Global ambience/resonance polish. Kept subtle: musical glue, not soup.
@@ -1220,7 +1356,7 @@ def final_mix(output, dream_level):
     output = apply_mix_feedback_controls(output)
 
     # Gentle glue reverb. A little more in D5, but still controlled.
-    wet = {1: 0.095, 3: 0.135, 5: 0.175}[dream_level] * ambient_scale
+    wet = base_reverb_wet(dream_level) * ambient_scale
     wet *= composition_feedback_audio_snapshot()["reverb_clarity_gain"]
     output = simple_stereo_reverb(output, wet=wet)
 
@@ -1486,6 +1622,31 @@ def feedback_continuity_start(start, duration, role, previous_layer_end):
         return max(0.0, adjusted)
     return float(start)
 
+
+def bound_sustained_fragment(frag, role, dream_level):
+    """Limit dominance and use a different sustained window at each D-level."""
+    if role not in {"texture", "resonance"}:
+        return frag
+    rotation = composition_feedback_audio_snapshot()["long_layer_rotation"]
+    request = max(0.0, rotation - 1.0)
+    if request <= 1e-6:
+        return frag
+
+    base_cap = {
+        "texture": {1: 15.0, 3: 14.0, 5: 13.0},
+        "resonance": {1: 22.0, 3: 20.0, 5: 18.0},
+    }[role][dream_level]
+    cap_scale = 1.0 - 0.10 * min(1.0, request / 0.5)
+    max_samples = max(32, int(base_cap * cap_scale * TARGET_SR))
+    if len(frag) <= max_samples:
+        return frag
+
+    spare = len(frag) - max_samples
+    window_position = {1: 0.12, 3: 0.48, 5: 0.78}[dream_level]
+    start = int(spare * window_position)
+    return frag[start:start + max_samples].copy()
+
+
 def transform_fragment_for_role(frag, role, dream_level):
     """
     Different musical functions receive different treatments.
@@ -1538,6 +1699,7 @@ def transform_fragment_for_role(frag, role, dream_level):
         # Long layer, but quieter and more distinct in D5.
         stretch = random.uniform(3.4, 7.6) * stretch_scale if dream_level == 5 else random.uniform(3.0, 7.5 + dream_level * 0.45)
         frag = stretch_audio(frag, stretch)
+        frag = bound_sustained_fragment(frag, role, dream_level)
         if dream_level >= 3 and random.random() < (0.55 if dream_level == 5 else 1.0):
             frag = harmonic_bloom(frag, dream_level)
         frag = clean_band(frag, low=28, high=11200)
@@ -1548,6 +1710,7 @@ def transform_fragment_for_role(frag, role, dream_level):
     else:  # texture
         stretch = random.uniform(2.4, 5.8) * stretch_scale if dream_level == 5 else random.uniform(2.0, 5.5 + dream_level * 0.35)
         frag = stretch_audio(frag, stretch)
+        frag = bound_sustained_fragment(frag, role, dream_level)
         if dream_level >= 3 and random.random() < (0.45 if dream_level == 5 else 0.65):
             frag = harmonic_bloom(frag, dream_level)
         frag = clean_band(frag, low=34, high=12000)
@@ -1739,7 +1902,9 @@ def central_spectral_bloom(output, dream_level):
     # the bloom is constructed from that scale; otherwise the original field is retained.
     freqs = scale_frequencies(low_midi=52, high_midi=99, count=10)
     if freqs is None:
-        freqs = [330, 392, 494, 587, 740, 880, 1175, 1480, 1760, 2217]
+        base_freqs = [330, 392, 494, 587, 740, 880, 1175, 1480, 1760, 2217]
+        ratio = {3: 0.982, 5: 1.018}[dream_level]
+        freqs = [freq * ratio for freq in base_freqs]
     amps = [0.006, 0.006, 0.005, 0.005, 0.004, 0.004, 0.0032, 0.0028, 0.0024, 0.0020]
 
     if dream_level == 5:
@@ -1801,7 +1966,7 @@ def generate_soundscape(dream_level):
     build_role_pools(objects)
 
     output = np.zeros((OUTPUT_DURATION * TARGET_SR, 2), dtype=np.float32)
-    make_ambient_bed(output, dream_level)
+    make_ambient_bed(output, dream_level, pulse_bpm=pulse_bpm)
 
     # A simple composed form: each section has a role tendency.
     form = [

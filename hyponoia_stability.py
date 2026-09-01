@@ -126,6 +126,33 @@ _INTENT_RULES = (
         "implementation_note": "Uses a transparent weak acoustic heuristic; it is not a trained source classifier.",
     },
     {
+        "intent": "increase_arpeggios",
+        "patterns": (
+            r"\bmore arpegg?i?os?\b",
+            r"\bmore arps?\b",
+            r"\badd (?:an? )?arpeggiator\b",
+        ),
+        "updates": {"arpeggio_weight": 0.10},
+        "implementation_note": "Adds bounded phrase-based synthesis; it does not replace library material.",
+    },
+    {
+        "intent": "increase_layer_clarity",
+        "patterns": (
+            r"\bless (?:blur|blurry|muddy|muddiness)\b",
+            r"\bclearer mix\b",
+            r"\bmore separation\b",
+        ),
+        "updates": {"layer_clarity_weight": 0.08},
+    },
+    {
+        "intent": "diversify_long_layers",
+        "patterns": (
+            r"\b(?:fewer|less of the) same (?:long )?(?:layers?|drones?)\b",
+            r"\b(?:different|vary the) (?:long )?(?:layers?|drones?)\b",
+        ),
+        "updates": {"long_layer_diversity_weight": 0.10},
+    },
+    {
         "intent": "increase_library_exploration",
         "patterns": (
             r"\bmore (?:library )?(?:objects|samples|sounds|variety)\b",
@@ -135,6 +162,14 @@ _INTENT_RULES = (
             r"\bdifferent (?:sounds|samples|materials?)\b",
         ),
         "updates": {"exploration_weight": 0.10, "repetition_control": 0.05},
+    },
+    {
+        "intent": "increase_palette_variety",
+        "patterns": (
+            r"\bmore pluralism\b",
+            r"\bmore varied palette\b",
+        ),
+        "updates": {"exploration_weight": 0.06, "repetition_control": 0.03},
     },
     {
         "intent": "decrease_repetition",
@@ -173,6 +208,14 @@ _INTENT_RULES = (
         ),
         "updates": {"material_development_weight": 0.08},
     },
+    {
+        "intent": "increase_palette_variety",
+        "patterns": (
+            r"\bπερισσοτερ[ηοα]?\s+(?:ποικιλια|πλουραλισμ\w*)\b",
+            r"\bπιο ποικιλ(?:ο|η|α)\b",
+        ),
+        "updates": {"exploration_weight": 0.06, "repetition_control": 0.03},
+    },
 )
 
 
@@ -193,6 +236,31 @@ _UNICODE_INTENT_RULES = (
             r"\bπερισσοτερ(?:ο|α)\s+ηλεκτρονικ(?:ο|α)\s+(?:υλικο|ηχοι?)\b",
         ),
         "updates": {"synthetic_material_weight": 0.08},
+    },
+    {
+        "intent": "increase_arpeggios",
+        "patterns": (
+            r"\bπερισσοτερ(?:α|ο)\s+(?:arpegg?i?os?|arps?|αρπισμ\w*)\b",
+            r"\bπροσθεσ(?:ε|τε)\s+(?:arpegg?i?os?|αρπισμ\w*)\b",
+        ),
+        "updates": {"arpeggio_weight": 0.10},
+    },
+    {
+        "intent": "increase_layer_clarity",
+        "patterns": (
+            r"\bλιγοτερ[ηοα]?\s+θολουρα\b",
+            r"\bπιο καθαρ(?:η|ο)\s+μιξη\b",
+            r"\bκαθαροτερ(?:η|ο)\s+μιξη\b",
+        ),
+        "updates": {"layer_clarity_weight": 0.08},
+    },
+    {
+        "intent": "diversify_long_layers",
+        "patterns": (
+            r"\bλιγοτερ(?:α|ες)\s+(?:απο\s+)?(?:τα\s+)?ιδι(?:α|ες)\s+(?:μεγαλα\s+)?(?:layers?|στρωματα|drones?)\b",
+            r"\bδιαφορετικ(?:α|ες)\s+(?:μεγαλα\s+)?(?:layers?|στρωματα|drones?)\b",
+        ),
+        "updates": {"long_layer_diversity_weight": 0.10},
     },
     {
         "intent": "decrease_repetition",

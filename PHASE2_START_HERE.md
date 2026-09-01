@@ -134,3 +134,11 @@ selection, density, development, synth presence, low-frequency masking, layer
 clarity, event activity and role-aware releases. The accepted D1-D listening
 baseline scored 3.5/5; it is evidence for the next training cycle, not a claim
 that the preference model is finished.
+
+The next candidate pass also recognises explicit requests for arpeggios, a
+clearer/less muddy mix and different sustained layers. Arpeggios are generated
+as bounded phrases, not as one continuous bed. Long texture/resonance sources
+rotate between D1/D3/D5 families and are windowed only after explicit diversity
+feedback. The shared reverb keeps most bass and low-mid energy dry. These
+changes remain candidates until human listening accepts them; D1-D stays the
+protected reference.

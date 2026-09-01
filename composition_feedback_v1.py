@@ -52,13 +52,17 @@ def directional_field_deltas(more: str, less: str) -> tuple[dict[str, float], li
     rules = (
         ("more", r"\b(?:musicality|μουσικοτητα)\b", "increase_musicality", {"musicality_weight": 0.06}),
         ("more", r"\b(?:synth\w*|συνθε\w*|ηλεκτρονικ\w*)\b", "increase_synthetic_material", {"synthetic_material_weight": 0.08}),
+        ("more", r"\b(?:arpegg?i?os?|arps?|αρπισμ\w*)\b", "increase_arpeggios", {"arpeggio_weight": 0.10}),
+        ("more", r"\b(?:variety|pluralism|ποικιλ\w*|πλουραλισμ\w*)\b", "increase_palette_variety", {"exploration_weight": 0.06, "repetition_control": 0.03}),
         ("more", r"\b(?:layers?|ηχητικα επιπεδα|στρωματα|υφες)\b", "increase_richness", {"richness_weight": 0.07}),
         ("more", r"\b(?:development|αναπτυξη|εξελιξη)\b", "increase_material_development", {"material_development_weight": 0.08}),
         ("more", r"\b(?:energy|energetic|ενεργεια|ενεργητικ\w*)\b", "increase_activity", {"activity_weight": 0.07}),
         ("more", r"\b(?:smooth\w*|ομαλ\w* μεταβα\w*)\b", "increase_smoothness", {"transition_smoothness_weight": 0.08}),
         ("less", r"\b(?:bass|low end|low frequencies|μπασ\w*|χαμηλ\w* συχνοτ\w*)\b", "reduce_low_frequency_masking", {"low_frequency_control": 0.08}),
         ("less", r"\b(?:hidden|buried|κρυμμεν\w*|θαμμεν\w*)\b", "increase_layer_clarity", {"layer_clarity_weight": 0.08}),
+        ("less", r"\b(?:blur\w*|muddy|muddiness|θολ\w*)\b", "increase_mix_clarity", {"layer_clarity_weight": 0.08}),
         ("less", r"\b(?:repetition|repeats?|επαναληψ\w*)\b", "decrease_repetition", {"repetition_control": 0.10, "exploration_weight": 0.06}),
+        ("less", r"\b(?:same|identical|ιδι\w*)\b.*\b(?:long layers?|drones?|μεγαλ\w* layers?|συρτ\w* layers?)\b", "diversify_long_layers", {"long_layer_diversity_weight": 0.10}),
         ("less", r"\b(?:abrupt\w*|αποτομ\w*)\b", "increase_smoothness", {"transition_smoothness_weight": 0.08}),
     )
     texts = {"more": _field_text(more), "less": _field_text(less)}

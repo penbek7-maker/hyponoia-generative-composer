@@ -49,6 +49,8 @@ DEFAULT_WEIGHTS = {
     "exploration_weight": 1.0,
     "repetition_control": 1.0,
     "synthetic_material_weight": 1.0,
+    "arpeggio_weight": 1.0,
+    "long_layer_diversity_weight": 1.0,
     "activity_weight": 1.0,
     "material_development_weight": 1.0,
     "low_frequency_control": 1.0,
