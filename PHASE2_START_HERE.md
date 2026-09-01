@@ -103,19 +103,30 @@ The bridge fails closed: missing or malformed configuration or embeddings
 produce a neutral factor instead of interrupting a render. Every render report
 records whether the assist was active, its strength, and the embedding count.
 
-## Dynamic user library foundation
+## Change your sound library
 
-`library_manager_v1.py` creates a content-aware manifest for a user-controlled
-WAV folder. It detects additions, replacements, removals and unambiguous
-renames without decoding, moving or deleting the user's audio. Removed and
-replaced inventory entries are archived, while unchanged content keeps its
-history. This is the safe discovery layer for the forthcoming **Update
-Library** button; it does not silently start training.
+On macOS, double-click `Open Hyponoia Library.command`.
+
+1. Choose any folder containing WAV files.
+2. Press **Preview changes**.
+3. Check the counts for added, changed, removed, renamed and unchanged files.
+4. Press **Update library**.
+
+Hyponoia recommends about 100 source recordings for a useful personal palette,
+but this is not a hard minimum. You may start with fewer and add, replace,
+rename or remove WAV files whenever you want. Source WAV files are never moved,
+deleted or rewritten. Unchanged analyses are reused; new or modified recordings
+are analysed, and the previous generated index is backed up before activation.
+
+The selected folder is saved locally in `hyponoia_user_config.json`. The next
+composition automatically uses that library. Personal audio, the local path
+configuration and backups are ignored by Git and are not uploaded to GitHub.
+
+The same update is available from Terminal when needed:
 
 ```bash
-.venv/bin/python library_manager_v1.py \
-  --library /path/to/Hyponoia\ Library \
-  --manifest /path/to/private/library_manifest_v1.json
+.venv/bin/python update_library_v1.py \
+  --library /path/to/Hyponoia\ Library
 ```
 
 ## Unified composition feedback foundation

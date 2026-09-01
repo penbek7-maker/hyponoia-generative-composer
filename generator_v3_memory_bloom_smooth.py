@@ -3,6 +3,7 @@
 import os
 import json
 import random
+from pathlib import Path
 from functools import lru_cache
 from datetime import datetime
 
@@ -21,8 +22,28 @@ from hyponoia_stability import (
 )
 from representation_assist_v1 import RepresentationAssist
 
-MEMORY_FILE = os.environ.get("HYPNOIA_MEMORY_FILE", "memory_index_v3.json")
-MEMORY_FOLDER = os.environ.get("HYPNOIA_MEMORY_FOLDER", "alpha_memory")
+USER_CONFIG_FILE = os.environ.get("HYPNOIA_USER_CONFIG", "hyponoia_user_config.json")
+
+
+def load_user_paths(config_path=USER_CONFIG_FILE):
+    """Load paths saved by Update Library; environment variables still win."""
+    path = Path(config_path).expanduser()
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+USER_PATHS = load_user_paths()
+MEMORY_FILE = os.environ.get(
+    "HYPNOIA_MEMORY_FILE", USER_PATHS.get("memory_file", "memory_index_v3.json")
+)
+MEMORY_FOLDER = os.environ.get(
+    "HYPNOIA_MEMORY_FOLDER", USER_PATHS.get("memory_folder", "alpha_memory")
+)
 OUTPUT_FOLDER = os.environ.get("HYPNOIA_OUTPUT_FOLDER", "output")
 PROFILE_FILE = os.environ.get("HYPNOIA_PROFILE_FILE", "alpha_profile.json")
 LEARNING_FILE = os.environ.get("HYPNOIA_LEARNING_FILE", "learning_profile.json")
@@ -32,7 +53,10 @@ SAMPLE_LEARNING_FILE = os.environ.get(
 RENDER_REPORT_FILE = os.environ.get("HYPNOIA_RENDER_REPORT_FILE", "render_report.json")
 RENDER_REPORT_FOLDER = os.environ.get("HYPNOIA_RENDER_REPORT_FOLDER", "render_reports")
 GENERATOR_REVISION = "2026-09-01-mix-long-layer-arpeggio-1"
-REPRESENTATION_CONFIG_FILE = "representation_config.json"
+REPRESENTATION_CONFIG_FILE = os.environ.get(
+    "HYPNOIA_REPRESENTATION_CONFIG",
+    USER_PATHS.get("representation_config", "representation_config.json"),
+)
 REPRESENTATION_ASSIST = RepresentationAssist.disabled()
 REPRESENTATION_ASSIST_ROLES = frozenset({"gesture", "texture", "impact", "noise"})
 
