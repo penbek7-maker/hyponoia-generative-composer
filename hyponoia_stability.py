@@ -234,6 +234,7 @@ _UNICODE_INTENT_RULES = (
         "patterns": (
             r"\bπερισσοτερ(?:α|ο)\s+(?:synth|synthesizer|συνθεσαιζερ|συνθετικ(?:ο|α))\b",
             r"\bπερισσοτερ(?:ο|α)\s+ηλεκτρονικ(?:ο|α)\s+(?:υλικο|ηχοι?)\b",
+            r"\bπερισσοτερ[ηοα]?\s+μουσικοτητα\s+(?:και\s+)?(?:synth|synthesizer|συνθεσαιζερ)\b",
         ),
         "updates": {"synthetic_material_weight": 0.08},
     },

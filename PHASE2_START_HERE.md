@@ -160,3 +160,14 @@ rotate between D1/D3/D5 families and are windowed only after explicit diversity
 feedback. The shared reverb keeps most bass and low-mid energy dry. These
 changes remain candidates until human listening accepts them; D1-D stays the
 protected reference.
+
+## Free text and voice-input foundation
+
+`feedback_input_v1.py` gives typed feedback and transcribed voice the same
+Greek/English interpretation path. It produces a non-mutating preview that
+shows what Hyponoia understood, which D-level will change and the proposed
+bounded control updates. Unrecognised text cannot be applied, and every change
+requires explicit confirmation before it is saved. `Open Hyponoia
+Feedback.command` opens the first non-technical text-feedback window. The
+native push-to-talk capture remains the next UI layer; its transcript will use
+this same tested route and cannot bypass preview or D1/D3/D5 isolation.
