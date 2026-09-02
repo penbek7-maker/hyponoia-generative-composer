@@ -109,3 +109,21 @@ def test_nontechnical_preview_explains_targets_and_actions():
     assert "περισσότερη μουσικότητα" in text
     assert "ομαλότερες μεταβάσεις" in text
     assert "musicality_weight" in text
+
+
+def test_natural_coordinated_greek_lists_inherit_more_and_less_direction():
+    preview = build_feedback_preview(
+        "Θέλω περισσότερη μουσικότητα, synth, arpeggios, ενέργεια και πιο ομαλές "
+        "μεταβάσεις. Λιγότερη επανάληψη και θολούρα.",
+        dream_level="D5",
+    )
+    intents = {item["intent"] for item in preview["actions"]}
+    assert {
+        "increase_musicality",
+        "increase_synthetic_material",
+        "increase_arpeggios",
+        "increase_activity",
+        "increase_smoothness",
+        "decrease_repetition",
+        "increase_layer_clarity",
+    } <= intents
