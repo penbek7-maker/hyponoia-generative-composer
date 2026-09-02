@@ -1,5 +1,8 @@
 {
   "mode": "off",
   "embeddings_path": "phase2_artifacts/embeddings_v2.json",
+  "encoder_path": "phase2_artifacts/encoder_v1.pt",
+  "metric_adapter_path": "phase2_artifacts/metric_adapter_v2.pt",
+  "refresh_policy": "frozen_encoder_incremental",
   "strength": 0.35
 }

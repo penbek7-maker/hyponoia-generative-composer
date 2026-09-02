@@ -118,6 +118,13 @@ rename or remove WAV files whenever you want. Source WAV files are never moved,
 deleted or rewritten. Unchanged analyses are reused; new or modified recordings
 are analysed, and the previous generated index is backed up before activation.
 
+When representation assist is active, the same update also refreshes its
+embeddings without full retraining. Embeddings with unchanged content-derived
+stable IDs are reused, new sound objects are passed through the frozen encoder
+and current metric adapter, and removed objects are pruned. If a required model
+artifact is missing or invalid, the current working memory and embeddings are
+preserved instead of activating a partial update.
+
 The selected folder is saved locally in `hyponoia_user_config.json`. The next
 composition automatically uses that library. Personal audio, the local path
 configuration and backups are ignored by Git and are not uploaded to GitHub.

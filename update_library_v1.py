@@ -12,6 +12,7 @@ import argparse
 import copy
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from hyponoia_stability import (
 )
 from library_manager_v1 import load_library_manifest, scan_library, update_library_manifest
 from memory_builder_v3 import MIN_OBJECT, analyse_object, detect_sound_objects, load_audio
+from incremental_embeddings_v1 import prepare_from_config
 
 
 def _safe_timestamp() -> str:
@@ -166,6 +168,7 @@ def update_library(
     index_path = project_root / "memory_index_v3.json"
     report_path = project_root / "memory_build_report.json"
     user_config_path = project_root / "hyponoia_user_config.json"
+    representation_config_path = project_root / "representation_config.json"
 
     previous_manifest = load_library_manifest(manifest_path)
     current_files = scan_library(library_root)
@@ -206,13 +209,40 @@ def update_library(
         result["build_report"] = build_report
         return result
 
+    try:
+        with tempfile.TemporaryDirectory(prefix="hyponoia-library-update-") as temporary:
+            staged_index = Path(temporary) / "memory_index_v3.json"
+            atomic_write_json(staged_index, memory)
+            embeddings_path, embeddings_payload, embedding_report = prepare_from_config(
+                staged_index,
+                library_root,
+                representation_config_path,
+            )
+    except Exception as exc:
+        result["status"] = "blocked"
+        result["error"] = (
+            "Deep Learning embeddings could not be refreshed; the current working "
+            "memory and embeddings were preserved."
+        )
+        result["embedding_error"] = f"{type(exc).__name__}: {exc}"
+        result["build_report"] = build_report
+        return result
+
+    build_report["embedding_refresh"] = embedding_report
+
     backup_root = project_root / "library_backups" / _safe_timestamp()
+    generated_paths = [manifest_path, index_path, report_path, user_config_path]
+    embeddings_changed = embedding_report.get("status") == "refreshed"
+    if embeddings_path is not None and embeddings_changed:
+        generated_paths.append(embeddings_path)
     backups = _backup_generated_files(
-        [manifest_path, index_path, report_path, user_config_path], backup_root
+        generated_paths, backup_root
     )
     atomic_write_json(index_path, memory)
     atomic_write_json(report_path, build_report)
     atomic_write_json(manifest_path, proposed_manifest)
+    if embeddings_path is not None and embeddings_payload is not None and embeddings_changed:
+        atomic_write_json(embeddings_path, embeddings_payload)
     atomic_write_json(
         user_config_path,
         {
@@ -232,6 +262,7 @@ def update_library(
             "backup_folder": str(backup_root) if backups else None,
             "backed_up_files": backups,
             "build_report": build_report,
+            "embedding_refresh": embedding_report,
         }
     )
     return result

@@ -87,10 +87,24 @@ class LibraryApp:
                     f"New analyses: {len(report.get('analysed_recordings', []))}",
                 ]
             )
+        embeddings = result.get("embedding_refresh") or (report or {}).get("embedding_refresh")
+        if embeddings:
+            lines.extend(
+                [
+                    "",
+                    f"Deep Learning embeddings: {embeddings.get('status', 'unknown')}",
+                    f"Reused embeddings: {embeddings.get('reused_embeddings', 0)}",
+                    f"New embeddings: {embeddings.get('created_embeddings', 0)}",
+                    f"Removed embeddings: {embeddings.get('removed_embeddings', 0)}",
+                    "Full retraining: No",
+                ]
+            )
         if result.get("backup_folder"):
             lines.extend(["", f"Previous version backup: {result['backup_folder']}"])
         if result.get("error"):
             lines.extend(["", f"Problem: {result['error']}"])
+        if result.get("embedding_error"):
+            lines.append(f"Deep Learning detail: {result['embedding_error']}")
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
         self.details.insert("1.0", "\n".join(lines))

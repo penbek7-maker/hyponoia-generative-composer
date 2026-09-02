@@ -32,6 +32,7 @@ memory_index_v3.json
 library_manifest_v1.json
 hyponoia_user_config.json
 library_backups/
+phase2_artifacts/
 
 # Old development files and backups
 Generators old/
