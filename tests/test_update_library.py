@@ -47,6 +47,7 @@ def test_update_builds_memory_config_and_never_changes_source_audio(tmp_path, mo
     config = json.loads((project / "hyponoia_user_config.json").read_text())
     assert config["memory_folder"] == str(library.resolve())
     assert config["memory_file"] == str((project / "memory_index_v3.json").resolve())
+    assert result["embedding_refresh"]["status"] == "disabled"
 
 
 def test_unchanged_and_renamed_wav_reuse_previous_analysis(tmp_path, monkeypatch):
@@ -110,3 +111,34 @@ def test_preview_reports_changes_without_writing_generated_files(tmp_path):
     assert result["plan"]["summary"]["added"] == 1
     assert not (project / "memory_index_v3.json").exists()
     assert not (project / "library_manifest_v1.json").exists()
+
+
+def test_active_assist_failure_preserves_previous_memory_and_embeddings(tmp_path, monkeypatch):
+    library = tmp_path / "library"
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(library / "first.wav", b"first")
+    monkeypatch.setattr(updater, "_analyse_recording", _fake_record)
+    updater.update_library(library, project)
+    previous_memory = (project / "memory_index_v3.json").read_bytes()
+
+    embeddings = project / "embeddings.json"
+    embeddings.write_text(json.dumps({"obj_first": [1.0] + [0.0] * 31}))
+    (project / "representation_config.json").write_text(
+        json.dumps(
+            {
+                "mode": "assist",
+                "embeddings_path": "embeddings.json",
+                "encoder_path": "missing_encoder.pt",
+            }
+        )
+    )
+    previous_embeddings = embeddings.read_bytes()
+    _write(library / "second.wav", b"second")
+
+    result = updater.update_library(library, project)
+
+    assert result["status"] == "blocked"
+    assert "embeddings" in result["error"]
+    assert (project / "memory_index_v3.json").read_bytes() == previous_memory
+    assert embeddings.read_bytes() == previous_embeddings
