@@ -25,7 +25,12 @@ def format_preview(preview: dict) -> str:
             "Δοκίμασε π.χ. ‘περισσότερο synth, λιγότερη επανάληψη και πιο ομαλές μεταβάσεις’."
         )
     targets = ", ".join(preview.get("target_levels", []))
-    lines = [f"Θα επηρεαστεί: {targets}", "", "Κατάλαβα:"]
+    mode = preview.get("interpreter", "rules")
+    mode_label = "τοπικό γλωσσικό μοντέλο" if mode == "local_llm" else "ασφαλείς βασικοί κανόνες"
+    lines = [f"Θα επηρεαστεί: {targets}", f"Κατανόηση: {mode_label}"]
+    if preview.get("summary_el"):
+        lines.extend([f"Σύνοψη: {preview['summary_el']}"])
+    lines.extend(["", "Κατάλαβα:"])
     lines.extend(f"• {action['label_el']}" for action in preview.get("actions", []))
     lines.extend(["", "Ακριβείς μικρές αλλαγές:"])
     for change in preview.get("control_changes", []):
@@ -33,6 +38,9 @@ def format_preview(preview: dict) -> str:
             f"• {change['target_level']} — {change['control']}: "
             f"{change['old_value']:.2f} → {change['new_value']:.2f}"
         )
+    if preview.get("ambiguities"):
+        lines.extend(["", "Σημεία που χρειάζονται προσοχή:"])
+        lines.extend(f"• {item}" for item in preview["ambiguities"])
     return "\n".join(lines)
 
 
@@ -140,6 +148,7 @@ class FeedbackApp:
                 source=self.source,
                 locale=self.locale,
                 profile=profile,
+                interpreter="auto",
             )
         except ValueError as exc:
             messagebox.showinfo("Έλεγξε το σχόλιο", str(exc))

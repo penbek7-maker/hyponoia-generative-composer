@@ -164,10 +164,16 @@ protected reference.
 ## Free text and voice-input foundation
 
 `feedback_input_v1.py` gives typed feedback and transcribed voice the same
-Greek/English interpretation path. It produces a non-mutating preview that
-shows what Hyponoia understood, which D-level will change and the proposed
-bounded control updates. Unrecognised text cannot be applied, and every change
-requires explicit confirmation before it is saved. `Open Hyponoia
-Feedback.command` opens the first non-technical text-feedback window. The
-native push-to-talk capture remains the next UI layer; its transcript will use
-this same tested route and cannot bypass preview or D1/D3/D5 isolation.
+Greek/English interpretation path. The non-technical window first asks the
+local `qwen3:4b` language model to map informal language onto Hyponoia's fixed
+musical intents. The model is not allowed to invent controls or numeric
+updates: `local_llm_feedback_v1.py` validates its structured answer and
+Hyponoia owns all bounded deltas and D-level routing. If the local model is not
+available, the existing deterministic rules remain a usable fallback.
+
+The preview shows what Hyponoia understood, which D-level will change and the
+proposed bounded control updates. Unrecognised or low-confidence text cannot be
+applied, and every change requires explicit confirmation before it is saved.
+`Open Hyponoia Feedback.command` opens the text-feedback window. Native
+push-to-talk capture is not connected yet; its transcript will use this exact
+tested route and cannot bypass preview or D1/D3/D5 isolation.

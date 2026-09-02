@@ -1,8 +1,9 @@
 """Preview and apply free-text or transcribed-voice feedback safely.
 
-Both input modes use the same deterministic Greek/English interpreter. A
-preview is always produced before profile mutation so the listener can see the
-understood intents, target D-level and bounded control changes.
+Both input modes use the same local interpreter path. The UI can use a small
+local language model with a deterministic rules fallback. A preview is always
+produced before profile mutation so the listener can see the understood
+intents, target D-level and bounded control changes.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from hyponoia_stability import (
     parse_feedback_comment,
     utc_timestamp,
 )
+from local_llm_feedback_v1 import LocalLLMUnavailable, interpret_with_local_llm
 
 
 INPUT_SOURCES = ("text", "voice")
@@ -78,13 +80,31 @@ def build_feedback_preview(
     source: str = "text",
     locale: str | None = None,
     profile: dict[str, Any] | None = None,
+    interpreter: str = "rules",
+    llm_interpreter: Any = interpret_with_local_llm,
 ) -> dict[str, Any]:
     """Return an explainable preview without mutating the learning profile."""
     source = str(source).strip().lower()
     if source not in INPUT_SOURCES:
         raise ValueError("source must be text or voice")
     transcript = str(text).strip()
-    interpretation = parse_feedback_comment(transcript, dream_level)
+    if interpreter not in {"rules", "local_llm", "auto"}:
+        raise ValueError("interpreter must be rules, local_llm or auto")
+    fallback_reason = None
+    if interpreter in {"local_llm", "auto"}:
+        try:
+            interpretation = llm_interpreter(transcript, dream_level)
+        except LocalLLMUnavailable as exc:
+            if interpreter == "local_llm":
+                raise ValueError(str(exc)) from exc
+            interpretation = parse_feedback_comment(transcript, dream_level)
+            interpretation["interpreter"] = "rules_fallback"
+            interpretation["model"] = None
+            fallback_reason = str(exc)
+    else:
+        interpretation = parse_feedback_comment(transcript, dream_level)
+        interpretation["interpreter"] = "rules"
+        interpretation["model"] = None
     current_profile = (
         _normalise_profile(DEFAULT_LEARNING_PROFILE)
         if profile is None
@@ -125,6 +145,12 @@ def build_feedback_preview(
         "actions": actions,
         "control_changes": changes,
         "interpretation": interpretation,
+        "interpreter": interpretation.get("interpreter", "rules"),
+        "model": interpretation.get("model"),
+        "confidence": float(interpretation.get("confidence", 0.0)),
+        "summary_el": interpretation.get("summary_el"),
+        "ambiguities": list(interpretation.get("ambiguities", [])),
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -167,6 +193,11 @@ def apply_feedback_preview(
         "scope": preview["scope"],
         "target_levels": list(preview["target_levels"]),
         "actions": copy.deepcopy(preview["actions"]),
+        "interpreter": preview.get("interpreter", "rules"),
+        "model": preview.get("model"),
+        "confidence": preview.get("confidence"),
+        "summary_el": preview.get("summary_el"),
+        "ambiguities": copy.deepcopy(preview.get("ambiguities", [])),
         "applied_control_updates": applied,
         "policy": {
             "preview_required": True,
@@ -188,6 +219,7 @@ def main() -> None:
     parser.add_argument("--level", required=True, choices=DREAM_LEVELS)
     parser.add_argument("--source", choices=INPUT_SOURCES, default="text")
     parser.add_argument("--locale")
+    parser.add_argument("--interpreter", choices=("rules", "local_llm", "auto"), default="auto")
     parser.add_argument("--profile", type=Path, default=Path("learning_profile.json"))
     parser.add_argument("--apply", action="store_true", help="Apply after printing the preview")
     args = parser.parse_args()
@@ -198,6 +230,7 @@ def main() -> None:
         source=args.source,
         locale=args.locale,
         profile=profile,
+        interpreter=args.interpreter,
     )
     print(json.dumps(preview, indent=2, ensure_ascii=False))
     if args.apply:
