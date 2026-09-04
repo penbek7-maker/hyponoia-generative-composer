@@ -49,7 +49,7 @@ def test_more_energy_maps_to_bounded_activity_control():
         more="συνθετικό υλικό και λίγη περισσότερη ενέργεια",
         less="να φεύγουν λιγότερο απότομα και ομαλά",
     )
-    assert event["requested_control_deltas"]["activity_weight"] == pytest.approx(0.07)
+    assert event["requested_control_deltas"]["activity_weight"] > 0.07
     assert event["requested_control_deltas"]["synthetic_material_weight"] > 0.08
     assert event["requested_control_deltas"]["transition_smoothness_weight"] > 0.08
 

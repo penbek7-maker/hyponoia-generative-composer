@@ -22,6 +22,7 @@ MIN_CONFIDENCE = 0.55
 
 INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
     "increase_musicality": {"musicality_weight": 0.06},
+    "increase_coherence": {"coherence_weight": 0.07},
     "increase_rhythmicity": {"activity_weight": 0.05},
     "increase_bloom": {"bloom_weight": 0.07},
     "increase_synthetic_material": {"synthetic_material_weight": 0.08},
@@ -44,6 +45,11 @@ INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
     "increase_richness": {"richness_weight": 0.07},
     "increase_activity": {"activity_weight": 0.08},
     "increase_material_development": {"material_development_weight": 0.08},
+    "strengthen_overall_form": {
+        "bloom_weight": 0.05,
+        "material_development_weight": 0.05,
+        "coherence_weight": 0.03,
+    },
     "reduce_low_frequency_masking": {"low_frequency_control": 0.08},
 }
 
@@ -71,6 +77,7 @@ feedback and select only requested or clearly implied future changes.
 
 Intent meanings:
 - increase_musicality: more musically convincing phrasing/relationships
+- increase_coherence: stronger meaningful connections between materials
 - increase_rhythmicity: more pulse or rhythmic motion
 - increase_bloom: a stronger large-scale rise, expansion or climax
 - increase_synthetic_material: more synthesizer/electronic material
@@ -84,6 +91,7 @@ Intent meanings:
 - increase_richness: less empty/thin, richer texture or more layers
 - increase_activity: more energy/activity/speed
 - increase_material_development: evolve ideas rather than merely place/repeat them
+- strengthen_overall_form: clearer whole-piece direction, arc or arrival
 - reduce_low_frequency_masking: less bass masking or excessive low frequencies
 
 Important distinctions:
@@ -107,11 +115,15 @@ Examples:
 - "Πολύ καλό, κράτα το έτσι" -> no intents.
 - "Θέλω περισσότερο synth και arpeggios" -> increase_synthetic_material,
   increase_arpeggios.
+- "Θέλω περισσότερες συνδέσεις μεταξύ των ήχων" -> increase_coherence.
+- "Δεν οδηγεί κάπου σαν συνολική σύνθεση" -> strengthen_overall_form.
 
 Allowed intent identifiers:
 {intents}
 
-Write summary_el and ambiguities in concise Greek. Return only schema-valid JSON.
+Write summary_el and ambiguities concisely in the same language as the listener's
+comment (Greek for Greek input, English for English input). Return only
+schema-valid JSON.
 """.format(intents=", ".join(ALLOWED_INTENTS))
 
 

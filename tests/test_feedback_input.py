@@ -111,6 +111,20 @@ def test_nontechnical_preview_explains_targets_and_actions():
     assert "musicality_weight" in text
 
 
+def test_nontechnical_preview_can_be_displayed_fully_in_english():
+    preview = build_feedback_preview(
+        "More musicality, more synth and smoother transitions",
+        dream_level="D3",
+    )
+    text = format_preview(preview, language="en")
+    assert "Will affect: D3" in text
+    assert "more musicality" in text
+    assert "more synthetic material" in text
+    assert "smoother transitions" in text
+    assert "material selection and relationships" in text
+    assert "Comment: More musicality" in text
+
+
 def test_natural_coordinated_greek_lists_inherit_more_and_less_direction():
     preview = build_feedback_preview(
         "Θέλω περισσότερη μουσικότητα, synth, arpeggios, ενέργεια και πιο ομαλές "

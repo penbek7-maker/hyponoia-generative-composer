@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from composition_influence_v1 import describe_composition_influence
 from human_feedback_v1 import DEFAULT_LEARNING_PROFILE, DEFAULT_WEIGHTS, append_feedback_history
 from hyponoia_stability import (
     DREAM_LEVELS,
@@ -30,6 +31,7 @@ INPUT_SOURCES = ("text", "voice")
 
 INTENT_LABELS_EL = {
     "increase_musicality": "περισσότερη μουσικότητα",
+    "increase_coherence": "περισσότερες ουσιαστικές συνδέσεις μεταξύ των υλικών",
     "increase_rhythmicity": "περισσότερη ρυθμική κίνηση",
     "increase_bloom": "μεγαλύτερη ανάπτυξη/bloom",
     "increase_synthetic_material": "περισσότερο συνθετικό υλικό",
@@ -43,7 +45,28 @@ INTENT_LABELS_EL = {
     "increase_richness": "πλουσιότερα ηχητικά επίπεδα",
     "increase_activity": "περισσότερη ενέργεια",
     "increase_material_development": "περισσότερη ανάπτυξη του υλικού",
+    "strengthen_overall_form": "σαφέστερη συνολική μορφή και κατεύθυνση",
     "reduce_low_frequency_masking": "λιγότερη κάλυψη από χαμηλές συχνότητες",
+}
+
+INTENT_LABELS_EN = {
+    "increase_musicality": "more musicality",
+    "increase_coherence": "stronger meaningful connections between materials",
+    "increase_rhythmicity": "more rhythmic movement",
+    "increase_bloom": "greater development/bloom",
+    "increase_synthetic_material": "more synthetic material",
+    "increase_arpeggios": "more arpeggios",
+    "increase_layer_clarity": "clearer sonic layers",
+    "diversify_long_layers": "different long layers",
+    "increase_library_exploration": "greater library exploration",
+    "increase_palette_variety": "more variety",
+    "decrease_repetition": "less repetition",
+    "increase_smoothness": "smoother transitions",
+    "increase_richness": "richer sonic layers",
+    "increase_activity": "more energy",
+    "increase_material_development": "more material development",
+    "strengthen_overall_form": "clearer overall form and direction",
+    "reduce_low_frequency_masking": "less low-frequency masking",
 }
 
 
@@ -130,9 +153,11 @@ def build_feedback_preview(
         actions.append({
             "intent": intent,
             "label_el": INTENT_LABELS_EL.get(intent, intent),
+            "label_en": INTENT_LABELS_EN.get(intent, intent),
             "control_deltas": dict(action.get("control_deltas", {})),
         })
 
+    influence = describe_composition_influence(interpretation["combined_control_deltas"])
     return {
         "schema_version": "feedback_input_preview_v1",
         "source": source,
@@ -151,6 +176,7 @@ def build_feedback_preview(
         "summary_el": interpretation.get("summary_el"),
         "ambiguities": list(interpretation.get("ambiguities", [])),
         "fallback_reason": fallback_reason,
+        "composition_influence": influence,
     }
 
 
@@ -198,6 +224,7 @@ def apply_feedback_preview(
         "confidence": preview.get("confidence"),
         "summary_el": preview.get("summary_el"),
         "ambiguities": copy.deepcopy(preview.get("ambiguities", [])),
+        "composition_influence": copy.deepcopy(preview.get("composition_influence", {})),
         "applied_control_updates": applied,
         "policy": {
             "preview_required": True,

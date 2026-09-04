@@ -33,6 +33,7 @@ library_manifest_v1.json
 hyponoia_user_config.json
 library_backups/
 phase2_artifacts/
+local_models/
 
 # Old development files and backups
 Generators old/

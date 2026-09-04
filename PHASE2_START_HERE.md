@@ -174,6 +174,18 @@ available, the existing deterministic rules remain a usable fallback.
 The preview shows what Hyponoia understood, which D-level will change and the
 proposed bounded control updates. Unrecognised or low-confidence text cannot be
 applied, and every change requires explicit confirmation before it is saved.
-`Open Hyponoia Feedback.command` opens the text-feedback window. Native
-push-to-talk capture is not connected yet; its transcript will use this exact
-tested route and cannot bypass preview or D1/D3/D5 isolation.
+`Open Hyponoia Feedback.command` opens the unified feedback window. The user
+may type or press the microphone button, speak naturally, and stop the
+recording explicitly. Multilingual Whisper transcribes the recording locally;
+the audio is not uploaded and is not retained by the application. The
+transcript remains editable and then follows the exact same local Qwen,
+preview, confirmation and D1/D3/D5-isolation route as typed text. A separate
+speaker button reads the active D1/D3/D5 question with the local macOS Greek
+voice.
+
+Ratings and recognised text/voice intents now expose an auditable map of the
+composition domains they can influence: material selection, synth/arpeggios,
+energy/density, layers/mix, material development, transitions and overall
+form. This is a broad but bounded control layer. It supplies clean evidence for
+the later composition-wide preference model; it does not yet claim that a
+trained model has learned the quality of an entire finished render.

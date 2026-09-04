@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from composition_influence_v1 import describe_composition_influence
 from human_feedback_v1 import DEFAULT_LEARNING_PROFILE, DEFAULT_WEIGHTS, append_feedback_history
 from hyponoia_stability import (
     apply_control_deltas,
@@ -19,6 +20,7 @@ from hyponoia_stability import (
     parse_feedback_comment,
     utc_timestamp,
 )
+from local_llm_feedback_v1 import LocalLLMUnavailable, interpret_with_local_llm
 
 
 COMPOSITION_CRITERIA = (
@@ -32,12 +34,37 @@ COMPOSITION_CRITERIA = (
 )
 
 RATING_CONTROL_MAP = {
-    "musicality": {"musicality_weight": 1.0},
-    "material_coherence": {"coherence_weight": 1.0},
-    "transition_smoothness": {"transition_smoothness_weight": 1.0},
-    "variety_without_disconnection": {"exploration_weight": 0.45, "coherence_weight": 0.35},
+    "musicality": {
+        "musicality_weight": 1.0,
+        "coherence_weight": 0.20,
+        "material_development_weight": 0.15,
+    },
+    "material_coherence": {
+        "coherence_weight": 1.0,
+        "transition_smoothness_weight": 0.20,
+        "material_development_weight": 0.15,
+    },
+    "transition_smoothness": {
+        "transition_smoothness_weight": 1.0,
+        "coherence_weight": 0.15,
+    },
+    "variety_without_disconnection": {
+        "exploration_weight": 0.45,
+        "coherence_weight": 0.35,
+        "repetition_control": 0.25,
+    },
     "synth_material_presence": {"synthetic_material_weight": 1.0},
-    "development_over_repetition": {"material_development_weight": 0.65, "repetition_control": 0.55},
+    "development_over_repetition": {
+        "material_development_weight": 0.65,
+        "repetition_control": 0.55,
+        "bloom_weight": 0.20,
+    },
+    "overall_artistic_impression": {
+        "bloom_weight": 0.30,
+        "richness_weight": 0.20,
+        "activity_weight": 0.10,
+        "coherence_weight": 0.10,
+    },
 }
 
 
@@ -116,13 +143,33 @@ def build_composition_feedback(
     less: str = "",
     comment: str = "",
     render_name: str | None = None,
+    source: str = "text",
+    locale: str | None = None,
+    interpreter: str = "rules",
+    llm_interpreter: Any = interpret_with_local_llm,
 ) -> dict[str, Any]:
     validated = validate_ratings(ratings)
     level = normalise_dream_level(dream_level)
     if level is None:
         raise ValueError("dream_level must be D1, D3 or D5")
     combined_text = ". ".join(part.strip() for part in (more, less, comment) if part.strip())
-    interpretation = parse_feedback_comment(combined_text, level)
+    if source not in {"text", "voice"}:
+        raise ValueError("source must be text or voice")
+    if interpreter not in {"rules", "local_llm", "auto"}:
+        raise ValueError("interpreter must be rules, local_llm or auto")
+    fallback_reason = None
+    if interpreter in {"local_llm", "auto"} and combined_text:
+        try:
+            interpretation = llm_interpreter(combined_text, level)
+        except LocalLLMUnavailable as exc:
+            if interpreter == "local_llm":
+                raise ValueError(str(exc)) from exc
+            interpretation = parse_feedback_comment(combined_text, level)
+            interpretation["interpreter"] = "rules_fallback"
+            fallback_reason = str(exc)
+    else:
+        interpretation = parse_feedback_comment(combined_text, level)
+        interpretation["interpreter"] = "rules"
     field_deltas, field_actions = directional_field_deltas(more, less)
     numeric_deltas = rating_control_deltas(validated)
     requested = dict(numeric_deltas)
@@ -131,6 +178,7 @@ def build_composition_feedback(
     for control, delta in field_deltas.items():
         if control not in interpretation["combined_control_deltas"]:
             requested[control] = round(requested.get(control, 0.0) + float(delta), 6)
+    influence = describe_composition_influence(requested)
     return {
         "schema_version": "composition_feedback_v1",
         "event_id": f"cf_{uuid4().hex}",
@@ -141,15 +189,19 @@ def build_composition_feedback(
         "ratings_1_to_5": validated,
         "ratings_0_to_100": {key: round(value * 20.0, 3) for key, value in validated.items()},
         "listener_text": {"more": more, "less": less, "comment": comment},
+        "listener_input": {"source": source, "locale": locale},
         "comment_interpretation": interpretation,
         "directional_field_interpretation": {"actions": field_actions, "combined_control_deltas": field_deltas},
         "numeric_control_deltas": numeric_deltas,
         "requested_control_deltas": requested,
+        "composition_influence": influence,
+        "interpreter_fallback_reason": fallback_reason,
         "learning_policy": {
             "scope": "dream_level_only",
             "ratings_are_primary": True,
             "critic_can_override": False,
             "bounded_update": True,
+            "composition_domain_mapping": True,
         },
     }
 
@@ -186,6 +238,7 @@ def apply_feedback_file(
     *,
     profile_path: str | Path = "learning_profile.json",
     event_output_path: str | Path | None = None,
+    interpreter: str = "rules",
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Persist one review form as a bounded, D-level-specific learning update."""
     source = Path(feedback_path)
@@ -215,6 +268,9 @@ def apply_feedback_file(
         less=str(payload.get("less", "")),
         comment=str(payload.get("comment", "")),
         render_name=payload.get("render_name"),
+        source=str(payload.get("source", "text")),
+        locale=payload.get("locale"),
+        interpreter=interpreter,
     )
     updated, changes = apply_composition_feedback(profile, event)
     atomic_write_json(target, updated)
@@ -230,11 +286,13 @@ def main() -> None:
     parser.add_argument("feedback", type=Path, help="JSON review exported by the listening UI")
     parser.add_argument("--profile", type=Path, default=Path("learning_profile.json"))
     parser.add_argument("--event-output", type=Path)
+    parser.add_argument("--interpreter", choices=("rules", "local_llm", "auto"), default="auto")
     args = parser.parse_args()
     _profile, event, changes = apply_feedback_file(
         args.feedback,
         profile_path=args.profile,
         event_output_path=args.event_output,
+        interpreter=args.interpreter,
     )
     print(json.dumps({
         "event_id": event["event_id"],
