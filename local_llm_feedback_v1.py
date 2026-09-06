@@ -26,7 +26,13 @@ INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
     "increase_rhythmicity": {"activity_weight": 0.05},
     "increase_bloom": {"bloom_weight": 0.07},
     "increase_synthetic_material": {"synthetic_material_weight": 0.08},
+    "increase_instrument_material": {"instrument_material_weight": 0.08},
+    "bring_musical_material_forward": {
+        "foreground_presence_weight": 0.08,
+        "layer_clarity_weight": 0.04,
+    },
     "increase_arpeggios": {"arpeggio_weight": 0.10},
+    "decrease_arpeggios": {"arpeggio_weight": -0.20},
     "increase_layer_clarity": {"layer_clarity_weight": 0.08},
     "diversify_long_layers": {"long_layer_diversity_weight": 0.10},
     "increase_library_exploration": {
@@ -51,6 +57,10 @@ INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
         "coherence_weight": 0.03,
     },
     "reduce_low_frequency_masking": {"low_frequency_control": 0.08},
+    "increase_structured_granulation": {
+        "structured_granulation_weight": 0.10,
+        "material_development_weight": 0.03,
+    },
 }
 
 ALLOWED_INTENTS = tuple(INTENT_CONTROL_DELTAS)
@@ -81,7 +91,10 @@ Intent meanings:
 - increase_rhythmicity: more pulse or rhythmic motion
 - increase_bloom: a stronger large-scale rise, expansion or climax
 - increase_synthetic_material: more synthesizer/electronic material
+- increase_instrument_material: more confirmed instrument-hybrid source material
+- bring_musical_material_forward: clearer foreground presence for musical material
 - increase_arpeggios: more arpeggiated figures
+- decrease_arpeggios: fewer or no arpeggiated figures
 - increase_layer_clarity: clearer mix, separation, less mud/buried layers
 - diversify_long_layers: avoid reusing the same long drones/layers
 - increase_library_exploration: use more/different library sounds
@@ -93,6 +106,7 @@ Intent meanings:
 - increase_material_development: evolve ideas rather than merely place/repeat them
 - strengthen_overall_form: clearer whole-piece direction, arc or arrival
 - reduce_low_frequency_masking: less bass masking or excessive low frequencies
+- increase_structured_granulation: more organised, rhythmic granular movement
 
 Important distinctions:
 - Praise or preservation such as 'keep the energy', 'the synth is good',
@@ -115,8 +129,12 @@ Examples:
 - "Πολύ καλό, κράτα το έτσι" -> no intents.
 - "Θέλω περισσότερο synth και arpeggios" -> increase_synthetic_material,
   increase_arpeggios.
+- "Περισσότερα όργανα και τα μουσικά στοιχεία πιο μπροστά" ->
+  increase_instrument_material, bring_musical_material_forward.
+- "Δεν χρειάζεται arpeggio εδώ" -> decrease_arpeggios.
 - "Θέλω περισσότερες συνδέσεις μεταξύ των ήχων" -> increase_coherence.
 - "Δεν οδηγεί κάπου σαν συνολική σύνθεση" -> strengthen_overall_form.
+- "Θέλω περισσότερο οργανωμένο granulation" -> increase_structured_granulation.
 
 Allowed intent identifiers:
 {intents}

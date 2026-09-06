@@ -1,0 +1,12 @@
+{
+  "schema_version": "library_source_labels_v1",
+  "description": "Optional user-correctable source origin labels. Labels describe origin, not artistic value.",
+  "allowed_labels": [
+    "natural",
+    "synthetic",
+    "hybrid",
+    "instrument_hybrid",
+    "unknown"
+  ],
+  "recordings": {}
+}

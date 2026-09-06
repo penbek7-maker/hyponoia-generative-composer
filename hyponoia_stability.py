@@ -127,7 +127,25 @@ _INTENT_RULES = (
             r"\bmore\b(?:(?!\bless\b)[^.]){0,80}\bsynth(?:s|esizers?)?\b",
         ),
         "updates": {"synthetic_material_weight": 0.08},
-        "implementation_note": "Uses a transparent weak acoustic heuristic; it is not a trained source classifier.",
+        "implementation_note": "Uses human source labels plus bounded similarity in learned audio embeddings.",
+    },
+    {
+        "intent": "increase_instrument_material",
+        "patterns": (
+            r"\bmore instruments?\b",
+            r"\bmore instrumental material\b",
+            r"\bmore instrument[- ]hybrid material\b",
+        ),
+        "updates": {"instrument_material_weight": 0.08},
+    },
+    {
+        "intent": "bring_musical_material_forward",
+        "patterns": (
+            r"\b(?:bring|move) (?:the )?(?:music|musical material|instruments?) forward\b",
+            r"\bmore foreground (?:music|musical material|presence)\b",
+            r"\bmusical (?:material|elements?) more forward\b",
+        ),
+        "updates": {"foreground_presence_weight": 0.08, "layer_clarity_weight": 0.04},
     },
     {
         "intent": "increase_arpeggios",
@@ -139,6 +157,14 @@ _INTENT_RULES = (
         ),
         "updates": {"arpeggio_weight": 0.10},
         "implementation_note": "Adds bounded phrase-based synthesis; it does not replace library material.",
+    },
+    {
+        "intent": "decrease_arpeggios",
+        "patterns": (
+            r"\b(?:less|fewer|no|remove|without) arpegg?i?os?\b",
+            r"\barpegg?i?os? (?:is|are) not needed\b",
+        ),
+        "updates": {"arpeggio_weight": -0.20},
     },
     {
         "intent": "increase_layer_clarity",
@@ -206,22 +232,24 @@ _INTENT_RULES = (
         "updates": {"activity_weight": 0.08},
     },
     {
+        "intent": "increase_structured_granulation",
+        "patterns": (
+            r"\bmore (?:organised|organized|structured) granulation\b",
+            r"\bmore granular (?:movement|texture|activity)\b",
+            r"\b(?:organised|organized|structured) grains?\b",
+        ),
+        "updates": {"structured_granulation_weight": 0.10, "material_development_weight": 0.03},
+    },
+    {
         "intent": "increase_material_development",
         "patterns": (
             r"\bfewer (?:sounds|samples|objects)\b",
             r"\bdevelop (?:the )?(?:selected )?(?:sounds|samples|materials?)\b",
             r"\bmore coherent palette\b",
             r"\bsmaller palette\b",
+            r"\b(?:boring|static|stagnant|uninteresting)\b",
         ),
         "updates": {"material_development_weight": 0.08},
-    },
-    {
-        "intent": "increase_palette_variety",
-        "patterns": (
-            r"\bπερισσοτερ[ηοα]?\s+(?:ποικιλια|πλουραλισμ\w*)\b",
-            r"\bπιο ποικιλ(?:ο|η|α)\b",
-        ),
-        "updates": {"exploration_weight": 0.06, "repetition_control": 0.03},
     },
 )
 
@@ -240,11 +268,46 @@ _UNICODE_INTENT_RULES = (
         "intent": "increase_synthetic_material",
         "patterns": (
             r"\bπερισσοτερ(?:α|ο)\s+(?:synth|synthesizer|συνθεσαιζερ|συνθετικ(?:ο|α))\b",
+            r"\bπερισσοτερ\w*\s+συνθετικ\w*(?:\s+(?:υλικο|υλικα|ηχο|ηχοι|ηχους))?\b",
             r"\bπερισσοτερ(?:ο|α)\s+ηλεκτρονικ(?:ο|α)\s+(?:υλικο|ηχοι?)\b",
             r"\bπερισσοτερ[ηοα]?\s+μουσικοτητα\s+(?:και\s+)?(?:synth|synthesizer|συνθεσαιζερ)\b",
             r"\bπερισσοτερ\w*\b(?:(?!\bλιγοτερ\w*\b)[^.]){0,80}\b(?:synth|synthesizer|συνθεσαιζερ)\b",
         ),
         "updates": {"synthetic_material_weight": 0.08},
+    },
+    {
+        "intent": "increase_instrument_material",
+        "patterns": (
+            r"\bπερισσοτερ(?:α|ους)\s+(?:οργανα|οργανικ(?:α|ους)\s+ηχους)\b",
+            r"\bπερισσοτερ\w*\s+(?:οργανο|οργανικα)[- ]?(?:υβριδικ\w*|hybrid)\b",
+        ),
+        "updates": {"instrument_material_weight": 0.08},
+    },
+    {
+        "intent": "bring_musical_material_forward",
+        "patterns": (
+            r"\b(?:τα\s+)?μουσικ(?:α|ο)\s+(?:στοιχεια|υλικο)\s+πιο\s+μπροστα\b",
+            r"\b(?:φερε|βγαλε)\s+(?:τα\s+)?(?:οργανα|μουσικα\s+στοιχεια)\s+πιο\s+μπροστα\b",
+            r"\bπιο\s+μπροστα\s+(?:στη\s+μιξη\s+)?(?:τα\s+)?(?:οργανα|μουσικα\s+στοιχεια)\b",
+        ),
+        "updates": {"foreground_presence_weight": 0.08, "layer_clarity_weight": 0.04},
+    },
+    {
+        "intent": "increase_palette_variety",
+        "patterns": (
+            r"\bπερισσοτερ[ηοα]?\s+(?:ποικιλια|πλουραλισμ\w*)\b",
+            r"\bπιο ποικιλ(?:ο|η|α)\b",
+        ),
+        "updates": {"exploration_weight": 0.06, "repetition_control": 0.03},
+    },
+    {
+        "intent": "increase_library_exploration",
+        "patterns": (
+            r"\bπερισσοτερ(?:α|ους)\s+(?:υλικα|ηχους|δειγματα|samples?)\b",
+            r"\bδιαφορετικ(?:α|ους)\s+(?:υλικα|ηχους|δειγματα|samples?)\b",
+            r"\b(?:τα\s+)?ιδια\s+υλικα\s+(?:και\s+)?στα\s+(?:τρια|3|ολα)\b",
+        ),
+        "updates": {"exploration_weight": 0.10, "repetition_control": 0.05},
     },
     {
         "intent": "increase_arpeggios",
@@ -254,6 +317,14 @@ _UNICODE_INTENT_RULES = (
             r"\bπερισσοτερ\w*\b(?:(?!\bλιγοτερ\w*\b)[^.]){0,80}\b(?:arpegg?i?os?|arps?|αρπισμ\w*)\b",
         ),
         "updates": {"arpeggio_weight": 0.10},
+    },
+    {
+        "intent": "decrease_arpeggios",
+        "patterns": (
+            r"\b(?:δεν χρειαζεται|χωρις|βγαλε|αφαιρεσε)\s+(?:το\s+)?(?:arpegg?i?o|αρπισμ\w*)\b",
+            r"\bλιγοτερ(?:α|ο)\s+(?:arpegg?i?os?|αρπισμ\w*)\b",
+        ),
+        "updates": {"arpeggio_weight": -0.20},
     },
     {
         "intent": "increase_layer_clarity",
@@ -295,6 +366,7 @@ _UNICODE_INTENT_RULES = (
         "intent": "increase_richness",
         "patterns": (
             r"\bπερισσοτερ(?:α|ο)\s+(?:ηχητικα\s+)?(?:επιπεδα|στρωματα|υφες)\b",
+            r"\bπερισσοτερ\w*\s+layers?\b",
             r"\bπλουσιοτερ(?:ο|η|α)\b",
             r"\bμεγαλυτερ(?:ο|η)\s+ηχητικ(?:ο|η)\s+βαθος\b",
         ),
@@ -306,6 +378,7 @@ _UNICODE_INTENT_RULES = (
             r"\bπερισσοτερ[ηοα]?\s+(?:μουσικ[ηο]?\s+)?αναπτυξη\b",
             r"\bνα εξελισσ(?:εται|ονται)\b",
             r"\bαναπτυξ(?:ε|η)\s+(?:τους\s+)?(?:ηχους|υλικα|δειγματα)\b",
+            r"\b(?:βαρετ\w*|στασιμ\w*|αδιαφορ\w*)\b",
         ),
         "updates": {"material_development_weight": 0.08},
     },
@@ -313,8 +386,21 @@ _UNICODE_INTENT_RULES = (
         "intent": "increase_activity",
         "patterns": (
             r"\bπερισσοτερ\w*\b(?:(?!\bλιγοτερ\w*\b)[^.]){0,80}\b(?:ενεργεια|δραστηριοτητα)\b",
+            r"\b(?:πολυ\s+)?χαμηλ(?:η|ο)\s+ενεργεια\b",
+            r"\bπαραειναι\s+αργ(?:ο|η)\b",
+            r"\bπολυ\s+αργ(?:ο|η)\b",
+            r"\bυποτονικ(?:ο|η|α)\b",
         ),
         "updates": {"activity_weight": 0.07},
+    },
+    {
+        "intent": "increase_structured_granulation",
+        "patterns": (
+            r"\bπερισσοτερ\w*\s+(?:οργανωμεν\w*\s+)?granulation\b",
+            r"\bοργανωμεν\w*\s+(?:κοκκοποιηση|κοκκωδ\w*|granulation)\b",
+            r"\bπερισσοτερ\w*\s+granular\s+(?:κινηση|υφη)\b",
+        ),
+        "updates": {"structured_granulation_weight": 0.10, "material_development_weight": 0.03},
     },
     {
         "intent": "reduce_low_frequency_masking",
@@ -355,7 +441,10 @@ def feedback_target_scope(comment: str, default_target_level: Any = None) -> dic
         or "σε όλα τα επίπεδα" in original
         or "σε ολα τα επιπεδα" in original
     )
-    explicit_level_match = re.search(r"\bd\s*([135])\b", ascii_text)
+    # A level mentioned inside prose (for example "this D3 sounds like D1")
+    # is evidence, not a routing command. Only a leading labelled prefix may
+    # override the level already selected in the UI.
+    explicit_level_match = re.match(r"^\s*d\s*([135])\s*(?::|-|–|—)", original)
     explicit_level = f"D{explicit_level_match.group(1)}" if explicit_level_match else None
     default_level = normalise_dream_level(default_target_level)
 

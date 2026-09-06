@@ -74,6 +74,68 @@ def test_faster_is_interpreted_as_real_activity_control_for_d5():
     assert interpretation["combined_control_deltas"]["activity_weight"] == 0.08
 
 
+def test_organised_granulation_is_a_distinct_bounded_intent():
+    interpretation = parse_feedback_comment(
+        "D5: περισσότερη ενέργεια και περισσότερο οργανωμένο granulation",
+        5,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert "increase_activity" in intents
+    assert "increase_structured_granulation" in intents
+    assert interpretation["combined_control_deltas"]["structured_granulation_weight"] == 0.10
+
+
+def test_natural_greek_low_energy_and_same_materials_feedback_is_understood():
+    interpretation = parse_feedback_comment(
+        "Είναι πολύ υποτονικό, παραείναι αργό και ακούω τα ίδια υλικά και στα τρία",
+        3,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert "increase_activity" in intents
+    assert "increase_library_exploration" in intents
+
+
+def test_mixed_greek_feedback_maps_synth_granulation_arpeggios_and_layers():
+    interpretation = parse_feedback_comment(
+        "Σε όλα τα επίπεδα: περισσότερο οργανωμένο granulation, περισσότερα layers, "
+        "περισσότερα arpeggios και περισσότερους συνθετικούς ήχους",
+        1,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert interpretation["target_levels"] == ["D1", "D3", "D5"]
+    assert {
+        "increase_structured_granulation",
+        "increase_richness",
+        "increase_arpeggios",
+        "increase_synthetic_material",
+    } <= intents
+
+
+def test_greek_instruments_and_forward_mix_have_distinct_controls():
+    interpretation = parse_feedback_comment(
+        "D5: περισσότερα όργανα και synth, με τα μουσικά στοιχεία πιο μπροστά",
+        5,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert {
+        "increase_instrument_material",
+        "increase_synthetic_material",
+        "bring_musical_material_forward",
+    } <= intents
+    deltas = interpretation["combined_control_deltas"]
+    assert deltas["instrument_material_weight"] == 0.08
+    assert deltas["foreground_presence_weight"] == 0.08
+
+
+def test_arpeggio_can_be_removed_from_one_selected_level():
+    interpretation = parse_feedback_comment("Δεν χρειάζεται το arpeggio εδώ", 3)
+    assert interpretation["target_levels"] == ["D3"]
+    assert {action["intent"] for action in interpretation["actions"]} == {
+        "decrease_arpeggios"
+    }
+    assert interpretation["combined_control_deltas"]["arpeggio_weight"] == -0.20
+
+
 def test_d5_musical_rhythmic_synthetic_bloom_feedback_is_fully_interpreted():
     interpretation = parse_feedback_comment(
         "D5: more musical, a little more rhythmic, more synthetic, and greater bloom",
@@ -101,6 +163,25 @@ def test_greek_explicit_global_scope_routes_to_all_levels_without_bilingual_inte
     assert interpretation["scope"] == "global"
     assert interpretation["target_levels"] == ["D1", "D3", "D5"]
     assert interpretation["status"] == "interpreted"
+
+
+def test_level_mentioned_as_comparison_does_not_override_selected_level():
+    interpretation = parse_feedback_comment(
+        "Ήταν καλό για D1, αλλά είχε πολύ χαμηλή ενέργεια",
+        3,
+    )
+    assert interpretation["target_levels"] == ["D3"]
+
+
+def test_d5_boring_and_slow_feedback_requests_development_and_activity():
+    interpretation = parse_feedback_comment(
+        "D5: είναι πολύ αργό και βαρετό, θέλω περισσότερη κίνηση",
+        5,
+    )
+    assert interpretation["target_levels"] == ["D5"]
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert "increase_activity" in intents
+    assert "increase_material_development" in intents
 
 
 def test_v1_sample_profile_migrates_without_losing_evidence():

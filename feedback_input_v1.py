@@ -35,7 +35,10 @@ INTENT_LABELS_EL = {
     "increase_rhythmicity": "περισσότερη ρυθμική κίνηση",
     "increase_bloom": "μεγαλύτερη ανάπτυξη/bloom",
     "increase_synthetic_material": "περισσότερο συνθετικό υλικό",
+    "increase_instrument_material": "περισσότερο οργανικό–υβριδικό υλικό",
+    "bring_musical_material_forward": "μουσικά στοιχεία πιο μπροστά στη μίξη",
     "increase_arpeggios": "περισσότερα arpeggios",
+    "decrease_arpeggios": "λιγότερα ή καθόλου arpeggios",
     "increase_layer_clarity": "καθαρότερα ηχητικά επίπεδα",
     "diversify_long_layers": "διαφορετικά μεγάλα layers",
     "increase_library_exploration": "μεγαλύτερη εξερεύνηση της βιβλιοθήκης",
@@ -47,6 +50,7 @@ INTENT_LABELS_EL = {
     "increase_material_development": "περισσότερη ανάπτυξη του υλικού",
     "strengthen_overall_form": "σαφέστερη συνολική μορφή και κατεύθυνση",
     "reduce_low_frequency_masking": "λιγότερη κάλυψη από χαμηλές συχνότητες",
+    "increase_structured_granulation": "περισσότερη οργανωμένη κοκκοποίηση",
 }
 
 INTENT_LABELS_EN = {
@@ -55,7 +59,10 @@ INTENT_LABELS_EN = {
     "increase_rhythmicity": "more rhythmic movement",
     "increase_bloom": "greater development/bloom",
     "increase_synthetic_material": "more synthetic material",
+    "increase_instrument_material": "more instrument-hybrid material",
+    "bring_musical_material_forward": "musical material further forward in the mix",
     "increase_arpeggios": "more arpeggios",
+    "decrease_arpeggios": "fewer or no arpeggios",
     "increase_layer_clarity": "clearer sonic layers",
     "diversify_long_layers": "different long layers",
     "increase_library_exploration": "greater library exploration",
@@ -67,6 +74,7 @@ INTENT_LABELS_EN = {
     "increase_material_development": "more material development",
     "strengthen_overall_form": "clearer overall form and direction",
     "reduce_low_frequency_masking": "less low-frequency masking",
+    "increase_structured_granulation": "more organised granulation",
 }
 
 

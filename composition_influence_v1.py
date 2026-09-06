@@ -12,12 +12,15 @@ DOMAIN_CONTROLS = {
         "exploration_weight",
         "repetition_control",
         "synthetic_material_weight",
+        "instrument_material_weight",
         "long_layer_diversity_weight",
     },
     "synth_and_arpeggios": {
         "synthetic_material_weight",
         "arpeggio_weight",
         "gesture_weight",
+        "structured_granulation_weight",
+        "instrument_material_weight",
     },
     "energy_and_density": {
         "activity_weight",
@@ -32,12 +35,15 @@ DOMAIN_CONTROLS = {
         "ambient_weight",
         "noise_penalty",
         "impact_penalty",
+        "foreground_presence_weight",
+        "instrument_material_weight",
     },
     "material_development": {
         "material_development_weight",
         "repetition_control",
         "coherence_weight",
         "musicality_weight",
+        "structured_granulation_weight",
     },
     "transitions": {
         "transition_smoothness_weight",

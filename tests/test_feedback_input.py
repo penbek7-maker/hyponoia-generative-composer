@@ -29,6 +29,20 @@ def test_text_feedback_previews_greek_intents_without_mutation():
     assert profile == before
 
 
+def test_preview_explains_instrument_material_and_forward_presence():
+    preview = build_feedback_preview(
+        "Περισσότερα όργανα και τα μουσικά στοιχεία πιο μπροστά",
+        dream_level="D5",
+        source="text",
+    )
+    intents = {item["intent"] for item in preview["actions"]}
+    assert "increase_instrument_material" in intents
+    assert "bring_musical_material_forward" in intents
+    controls = {item["control"] for item in preview["control_changes"]}
+    assert "instrument_material_weight" in controls
+    assert "foreground_presence_weight" in controls
+
+
 def test_voice_transcript_uses_exactly_the_same_interpreter_as_text():
     text = "More arpeggios, more energy and less repetition"
     typed = build_feedback_preview(text, dream_level="D5", source="text")
@@ -141,3 +155,16 @@ def test_natural_coordinated_greek_lists_inherit_more_and_less_direction():
         "decrease_repetition",
         "increase_layer_clarity",
     } <= intents
+
+
+def test_preview_explains_organised_granulation_as_composition_influence():
+    preview = build_feedback_preview(
+        "Θέλω περισσότερο οργανωμένο granulation",
+        dream_level="D5",
+    )
+    assert preview["can_apply"] is True
+    assert {item["intent"] for item in preview["actions"]} == {
+        "increase_structured_granulation"
+    }
+    assert "synth_and_arpeggios" in preview["composition_influence"]["domain_ids"]
+    assert "material_development" in preview["composition_influence"]["domain_ids"]

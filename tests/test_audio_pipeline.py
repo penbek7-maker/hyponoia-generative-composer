@@ -1,4 +1,5 @@
 import json
+import random
 
 import numpy as np
 import soundfile as sf
@@ -125,6 +126,17 @@ def test_arpeggio_feedback_creates_bounded_level_specific_audio(monkeypatch):
     assert np.max(np.abs(d5)) < 0.08
     assert np.count_nonzero(d3) > 0
     assert not np.array_equal(d3, d5)
+
+
+def test_arpeggio_motif_and_timbre_change_between_render_seeds(monkeypatch):
+    requested = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    requested["arpeggio_weight"] = 1.10
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    first = generator.synth_arpeggio_layer(1, duration=40.0)
+    monkeypatch.setattr(generator, "RENDER_SEED", 202)
+    second = generator.synth_arpeggio_layer(1, duration=40.0)
+    assert not np.array_equal(first, second)
 
 
 def test_arpeggio_phrases_emerge_gradually():
@@ -274,6 +286,172 @@ def test_d5_energy_and_character_controls_are_level_specific(monkeypatch):
     assert generator.d5_selection_character_factor(energetic_synthetic, 3) == 1.0
 
 
+def test_learned_synth_feedback_changes_object_selection_without_affecting_neutral(monkeypatch):
+    synth = {"features": {"synthetic_score": 0.92, "ambient_score": 0.18}}
+    watery = {"features": {"synthetic_score": 0.12, "ambient_score": 0.90}}
+
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert generator.learned_synthetic_material_factor(synth) == 1.0
+    assert generator.learned_synthetic_material_factor(watery) == 1.0
+
+    requested = dict(neutral)
+    requested["synthetic_material_weight"] = 1.24
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    assert generator.learned_synthetic_material_factor(synth) < 1.0
+    assert generator.learned_synthetic_material_factor(watery) > 1.0
+
+
+def test_learned_synth_candidate_focus_is_library_relative_and_feedback_driven(monkeypatch):
+    pool = [
+        {"object_id": str(index), "features": {"synthetic_score": index / 9.0}}
+        for index in range(10)
+    ]
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert generator.learned_synthetic_candidate_pool(pool) is pool
+
+    requested = dict(neutral)
+    requested["synthetic_material_weight"] = 1.24
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    monkeypatch.setattr(generator.random, "random", lambda: 0.0)
+    focused = generator.learned_synthetic_candidate_pool(pool)
+    assert 3 <= len(focused) < len(pool)
+    assert min(item["features"]["synthetic_score"] for item in focused) >= 5 / 9
+
+
+def test_human_natural_source_label_overrides_acoustic_synth_estimate(monkeypatch):
+    obj = {
+        "recording": "water.wav",
+        "features": {"synthetic_score": 0.91},
+    }
+    monkeypatch.setattr(generator, "LIBRARY_SOURCE_LABELS", {})
+    assert generator.effective_synthetic_score(obj) == 0.91
+    monkeypatch.setattr(generator, "LIBRARY_SOURCE_LABELS", {"water.wav": "natural"})
+    assert generator.source_origin(obj) == "natural"
+    assert generator.effective_synthetic_score(obj) <= 0.18
+
+
+def test_human_hybrid_source_label_stays_between_natural_and_synthetic(monkeypatch):
+    obj = {"recording": "hybrid.wav", "features": {"synthetic_score": 0.90}}
+    monkeypatch.setattr(generator, "LIBRARY_SOURCE_LABELS", {"hybrid.wav": "hybrid"})
+    score = generator.effective_synthetic_score(obj)
+    assert generator.source_origin(obj) == "hybrid"
+    assert 0.50 < score < 0.90
+
+    monkeypatch.setattr(
+        generator, "LIBRARY_SOURCE_LABELS", {"hybrid.wav": "instrument_hybrid"}
+    )
+    instrument_score = generator.effective_synthetic_score(obj)
+    assert generator.source_origin(obj) == "instrument_hybrid"
+    assert instrument_score == score
+
+
+def test_embedding_origin_model_generalises_confirmed_synth_examples():
+    unit = lambda values: np.asarray(values, dtype=np.float64) / np.linalg.norm(values)
+    embeddings = {
+        "s1": unit([1.0, 0.0]),
+        "s2": unit([0.96, 0.10]),
+        "n1": unit([0.0, 1.0]),
+        "n2": unit([0.10, 0.96]),
+        "near_synth": unit([0.99, 0.04]),
+        "near_natural": unit([0.04, 0.99]),
+    }
+    assist = type("Assist", (), {"active": True, "embeddings": embeddings})()
+    objects = [
+        {"recording": "synth_a.wav", "object_id": "s1"},
+        {"recording": "synth_b.wav", "object_id": "s2"},
+        {"recording": "natural_a.wav", "object_id": "n1"},
+        {"recording": "natural_b.wav", "object_id": "n2"},
+        {"recording": "unknown_a.wav", "object_id": "near_synth"},
+        {"recording": "unknown_b.wav", "object_id": "near_natural"},
+    ]
+    affinities, snapshot = generator.build_embedding_origin_model(
+        objects,
+        assist,
+        {
+            "synth_a.wav": "synthetic",
+            "synth_b.wav": "synthetic",
+            "natural_a.wav": "natural",
+            "natural_b.wav": "natural",
+        },
+    )
+    assert snapshot["active"] is True
+    assert snapshot["synthetic_anchor_objects"] == 2
+    assert affinities["near_synth"] > 0.67
+    assert affinities["near_natural"] == 0.50
+
+
+def test_instrument_and_foreground_feedback_have_audible_bounded_controls(monkeypatch):
+    weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    weights.update({
+        "synthetic_material_weight": 1.08,
+        "instrument_material_weight": 1.08,
+        "foreground_presence_weight": 1.08,
+    })
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
+    monkeypatch.setattr(
+        generator,
+        "LIBRARY_SOURCE_LABELS",
+        {"instrument.wav": "instrument_hybrid", "natural.wav": "natural"},
+    )
+    instrument = {"recording": "instrument.wav", "features": {}}
+    natural = {"recording": "natural.wav", "features": {}}
+    assert generator.learned_instrument_material_factor(instrument) < 1.0
+    assert generator.learned_instrument_material_factor(natural) > 1.0
+    snapshot = generator.composition_feedback_audio_snapshot()
+    assert 1.0 < snapshot["instrument_presence_gain"] <= 1.55
+    assert 1.0 < snapshot["foreground_presence_gain"] <= 1.45
+
+    monkeypatch.setattr(
+        generator,
+        "LIBRARY_SOURCE_LABELS",
+        {
+            "instrument.wav": "instrument_hybrid",
+            "synth.wav": "synthetic",
+            "other.wav": "unknown",
+        },
+    )
+    usage = {"other.wav": 12}
+    assert generator.learned_origin_mix_factor(
+        {"recording": "instrument.wav"}, usage
+    ) < 1.0
+    assert generator.learned_origin_mix_factor(
+        {"recording": "synth.wav"}, usage
+    ) < 1.0
+
+
+def test_d3_and_d5_background_instruments_are_distinct(monkeypatch):
+    monkeypatch.setattr(generator, "OUTPUT_DURATION", 1)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    d3 = np.zeros((generator.TARGET_SR, 2), dtype=np.float32)
+    d5 = np.zeros_like(d3)
+    generator.make_ambient_bed(d3, 3, pulse_bpm=96.0)
+    generator.make_ambient_bed(d5, 5, pulse_bpm=126.0)
+    assert np.any(np.abs(d3) > 0)
+    assert np.any(np.abs(d5) > 0)
+    assert not np.allclose(d3, d5)
+
+
+def test_positive_structure_controls_total_density_without_equalising_levels(monkeypatch):
+    class StructureAssist:
+        def target_event_count(self, dream_level, _duration):
+            return {1: 84, 3: 91, 5: 97}[dream_level]
+
+    form = [
+        ("opening", 0, 32, 0.65),
+        ("activation", 24, 62, 1.05),
+        ("complexity", 52, 102, 1.45),
+        ("memory", 90, 138, 1.05),
+        ("resolution", 125, 178, 0.75),
+    ]
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", StructureAssist())
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    assert sum(generator.planned_form_items(form, 1)) == 84
+    assert sum(generator.planned_form_items(form, 3)) == 91
+    assert sum(generator.planned_form_items(form, 5)) == 97
+
+
 def test_d5_temporal_energy_is_audible_and_level_specific(monkeypatch):
     neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
@@ -297,15 +475,79 @@ def test_d5_temporal_energy_is_audible_and_level_specific(monkeypatch):
     assert active_d5["ambient_scale"] < neutral_d5["ambient_scale"]
 
 
+def test_explicit_activity_feedback_changes_d1_and_d3_timing(monkeypatch):
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert generator.d5_temporal_profile(1)["temporal_drive"] == 1.0
+    assert generator.d5_temporal_profile(3)["temporal_drive"] == 1.0
+
+    active = dict(neutral)
+    active["activity_weight"] = 1.16
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", active)
+    for level in (1, 3):
+        profile = generator.d5_temporal_profile(level)
+        assert profile["temporal_drive"] > 1.0
+        assert profile["stretch_scale"] < 1.0
+        assert profile["delay_scale"] < 1.0
+
+
+def test_structured_granulation_is_bounded_and_feedback_controlled(monkeypatch):
+    fragment = np.linspace(-0.8, 0.8, 48_000, dtype=np.float32)
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    unchanged = generator.structured_granulation(fragment.copy(), "texture", 5)
+    assert np.array_equal(unchanged, fragment)
+
+    requested = dict(neutral)
+    requested["structured_granulation_weight"] = 1.10
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    developed = generator.structured_granulation(fragment.copy(), "texture", 5)
+    assert len(developed) == len(fragment)
+    assert not np.array_equal(developed, fragment)
+    assert np.max(np.abs(developed)) <= np.max(np.abs(fragment)) + 1e-6
+
+    stronger = dict(neutral)
+    stronger["structured_granulation_weight"] = 1.30
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", stronger)
+    pronounced = generator.structured_granulation(fragment.copy(), "texture", 5)
+    assert np.mean(np.abs(pronounced - fragment)) > np.mean(np.abs(developed - fragment))
+
+    resonance_d5 = generator.structured_granulation(fragment.copy(), "resonance", 5)
+    resonance_d3 = generator.structured_granulation(fragment.copy(), "resonance", 3)
+    assert not np.array_equal(resonance_d5, fragment)
+    assert np.array_equal(resonance_d3, fragment)
+
+
+def test_material_plans_are_not_nested_between_d_levels(monkeypatch):
+    objects = [
+        {
+            "recording": f"sample{index}.wav",
+            "recording_id": f"rec-{index}",
+            "object_id": f"obj-{index}",
+        }
+        for index in range(45)
+    ]
+    monkeypatch.setattr(generator, "profile_distance", lambda _obj, _profile: 1.0)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    plans = {}
+    for level in (1, 3, 5):
+        random.seed(9042026)
+        plans[level] = generator.build_material_plan(objects, {}, level, {"samples": {}})
+    assert not plans[1].issubset(plans[3])
+    assert not plans[3].issubset(plans[5])
+    assert len(plans[1] & plans[3]) < len(plans[1])
+    assert len(plans[3] & plans[5]) < len(plans[3])
+
+
 def test_d5_aesthetic_bridge_preserves_breathing_room(monkeypatch):
     weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     weights.update({"activity_weight": 1.32, "musicality_weight": 1.03})
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
     profile = generator.d5_temporal_profile(5)
-    assert profile["temporal_drive"] <= 1.30
-    assert profile["stretch_scale"] >= 0.94
-    assert profile["envelope_scale"] >= 0.96
-    assert profile["ambient_scale"] >= 0.94
+    assert profile["temporal_drive"] <= 1.32
+    assert profile["stretch_scale"] >= 0.90
+    assert profile["envelope_scale"] >= 0.92
+    assert profile["ambient_scale"] >= 0.90
 
     generator.CURRENT_FORM_VARIANT = "aesthetic_bridge"
     variant = generator.D5_FORM_VARIANTS[generator.CURRENT_FORM_VARIANT]
@@ -321,6 +563,25 @@ def test_d5_internal_motion_preserves_length_and_does_not_touch_d3(monkeypatch):
     assert np.array_equal(unchanged, fragment)
     assert len(developed) == len(fragment)
     assert not np.array_equal(developed, fragment)
+
+
+def test_d5_development_feedback_creates_multi_stage_phrase_and_global_arcs(monkeypatch):
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    assert np.allclose(generator.d5_development_curve(1000, "complexity"), 1.0)
+    assert np.allclose(generator.d5_global_evolution_curve(1000), 1.0)
+
+    learned = dict(neutral)
+    learned.update({
+        "material_development_weight": 1.16,
+        "synthetic_material_weight": 1.25,
+    })
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", learned)
+    phrase = generator.d5_development_curve(1000, "complexity")
+    global_curve = generator.d5_global_evolution_curve(1000)
+    assert float(np.ptp(phrase)) > 0.20
+    assert float(np.ptp(global_curve)) > 0.25
+    assert int(np.argmax(global_curve)) > 400
 
 
 def test_d5_reference_grid_and_lane_continuity_are_soft_not_hard():
@@ -362,6 +623,19 @@ def test_material_plan_limits_are_balanced(monkeypatch):
     assert generator.material_plan_limits(1) == (6, 12)
     assert generator.material_plan_limits(3) == (10, 20)
     assert generator.material_plan_limits(5) == (16, 30)
+
+
+def test_library_exploration_expands_each_level_palette(monkeypatch):
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    neutral_limits = {level: generator.material_plan_limits(level) for level in (1, 3, 5)}
+    wider = dict(neutral)
+    wider["exploration_weight"] = 1.18
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", wider)
+    for level in (1, 3, 5):
+        recording_limit, object_limit = generator.material_plan_limits(level)
+        assert recording_limit > neutral_limits[level][0]
+        assert object_limit > neutral_limits[level][1]
 
 
 def test_critic_scores_have_dynamic_range_without_hard_ceiling(tmp_path):
