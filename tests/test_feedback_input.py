@@ -168,3 +168,14 @@ def test_preview_explains_organised_granulation_as_composition_influence():
     }
     assert "synth_and_arpeggios" in preview["composition_influence"]["domain_ids"]
     assert "material_development" in preview["composition_influence"]["domain_ids"]
+
+
+def test_rules_fallback_understands_empty_texture_and_developing_loops():
+    preview = build_feedback_preview(
+        "Είναι πιο άδειο και θέλω δημιουργική εξέλιξη των μουσικών loops",
+        dream_level="D3",
+        interpreter="rules",
+    )
+    intents = {action["intent"] for action in preview["actions"]}
+    assert "increase_richness" in intents
+    assert "increase_material_development" in intents

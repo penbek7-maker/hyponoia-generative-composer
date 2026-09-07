@@ -184,6 +184,26 @@ def test_d5_boring_and_slow_feedback_requests_development_and_activity():
     assert "increase_material_development" in intents
 
 
+def test_impressive_energetic_d5_request_maps_to_bloom_and_activity():
+    interpretation = parse_feedback_comment(
+        "D5: το θέλω πιο εντυπωσιακό, σούπερ δυναμικό και παθιασμένο",
+        5,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert "increase_bloom" in intents
+    assert "increase_activity" in intents
+
+
+def test_preserving_granulation_does_not_request_an_increase():
+    interpretation = parse_feedback_comment(
+        "D5: πιο εντυπωσιακό, διατηρώντας το οργανωμένο granulation",
+        5,
+    )
+    intents = {action["intent"] for action in interpretation["actions"]}
+    assert "increase_bloom" in intents
+    assert "increase_structured_granulation" not in intents
+
+
 def test_v1_sample_profile_migrates_without_losing_evidence():
     memory = [{
         "recording": "source.wav",

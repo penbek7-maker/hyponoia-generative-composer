@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,7 @@ def train_composition_preference(
         raise ValueError("strength must be between 0 and 0.6")
 
     embeddings_path = Path(embeddings_path).expanduser().resolve()
+    output_path = Path(output_path).expanduser().resolve()
     embeddings = _load_embeddings(embeddings_path)
     positive_vectors = []
     negative_vectors = []
@@ -161,12 +163,69 @@ def train_composition_preference(
     positive = _unit(np.mean(np.stack(positive_vectors), axis=0))
     negative = _unit(np.mean(np.stack(negative_vectors), axis=0))
     separation = float(np.clip(1.0 - np.dot(positive, negative), 0.0, 2.0))
+    positive_margins = [
+        float(np.dot(vector, positive) - np.dot(vector, negative))
+        for vector in positive_vectors
+    ]
+    negative_margins = [
+        float(np.dot(vector, positive) - np.dot(vector, negative))
+        for vector in negative_vectors
+    ]
+    for report_path, evidence in zip(positive_reports, positive_evidence):
+        evidence["audio_file"] = Path(str(evidence.get("audio_file", ""))).name
+        evidence["source_report"] = "/".join(Path(report_path).parts[-3:])
+    for report_path, evidence in zip(negative_reports, negative_evidence):
+        evidence["audio_file"] = Path(str(evidence.get("audio_file", ""))).name
+        evidence["source_report"] = "/".join(Path(report_path).parts[-3:])
+
+    level_heads = {}
+    positive_levels = [item.get("dream_level") for item in positive_evidence]
+    negative_levels = [item.get("dream_level") for item in negative_evidence]
+    for level in (1, 3, 5):
+        positive_indices = [i for i, value in enumerate(positive_levels) if value == level]
+        negative_indices = [i for i, value in enumerate(negative_levels) if value == level]
+        if not positive_indices or not negative_indices:
+            continue
+        level_positive_vectors = [positive_vectors[i] for i in positive_indices]
+        level_negative_vectors = [negative_vectors[i] for i in negative_indices]
+        level_positive = _unit(np.mean(np.stack(level_positive_vectors), axis=0))
+        level_negative = _unit(np.mean(np.stack(level_negative_vectors), axis=0))
+        positive_level_margins = [
+            float(np.dot(vector, level_positive) - np.dot(vector, level_negative))
+            for vector in level_positive_vectors
+        ]
+        negative_level_margins = [
+            float(np.dot(vector, level_positive) - np.dot(vector, level_negative))
+            for vector in level_negative_vectors
+        ]
+        level_heads[str(level)] = {
+            "positive_prototype": level_positive.tolist(),
+            "negative_prototype": level_negative.tolist(),
+            "positive_structure": average_structures(
+                [positive_structures[i] for i in positive_indices]
+            ),
+            "contrast_structure": average_structures(
+                [negative_structures[i] for i in negative_indices]
+            ),
+            "reference_recordings": sorted({
+                recording
+                for i in positive_indices
+                for recording in positive_evidence[i]["recordings"]
+            }),
+            "training_diagnostics": {
+                "positive_render_count": len(positive_indices),
+                "contrast_render_count": len(negative_indices),
+                "mean_training_margin_gap": float(
+                    np.mean(positive_level_margins) - np.mean(negative_level_margins)
+                ),
+            },
+        }
     model = {
         "schema_version": "composition_preference_v1",
         "model_type": "contrastive_prototype_head_over_deep_embeddings",
         "trained_at": utc_timestamp(),
         "mode": "assist",
-        "embeddings_path": str(embeddings_path),
+        "embeddings_path": os.path.relpath(embeddings_path, output_path.parent),
         "embedding_dimensions": int(len(positive)),
         "strength": float(strength),
         "positive_target": float(positive_target),
@@ -179,11 +238,19 @@ def train_composition_preference(
         "reference_reuse_penalty": 1.08,
         "positive_structure": average_structures(positive_structures),
         "contrast_structure": average_structures(negative_structures),
+        "level_heads": level_heads,
         "training_diagnostics": {
             "positive_contrast_separation": separation,
+            "positive_training_margins": positive_margins,
+            "contrast_training_margins": negative_margins,
+            "mean_training_margin_gap": float(
+                np.mean(positive_margins) - np.mean(negative_margins)
+            ),
+            "positive_render_count": len(positive_vectors),
+            "contrast_render_count": len(negative_vectors),
             "covered_positive_objects": sum(item["covered_objects"] for item in positive_evidence),
             "covered_contrast_objects": sum(item["covered_objects"] for item in negative_evidence),
-            "policy": "strong human preference; bounded assist; no claim of perfect Critic scores",
+            "policy": "strong human preference; bounded assist; small-set training evidence, not a generalisation claim",
         },
     }
     atomic_write_json(output_path, model)
@@ -201,6 +268,7 @@ class CompositionPreferenceAssist:
     reference_reuse_penalty: float = 1.0
     positive_structure: dict[str, Any] = field(default_factory=dict)
     positive_dream_levels: set[int] = field(default_factory=set)
+    level_heads: dict[int, dict[str, Any]] = field(default_factory=dict)
     source_path: str | None = None
     error: str | None = None
 
@@ -223,6 +291,17 @@ class CompositionPreferenceAssist:
             embedding_path = Path(payload["embeddings_path"]).expanduser()
             if not embedding_path.is_absolute():
                 embedding_path = source.parent / embedding_path
+            level_heads = {}
+            for level, head in dict(payload.get("level_heads", {})).items():
+                parsed_level = int(level)
+                if parsed_level not in (1, 3, 5):
+                    continue
+                level_heads[parsed_level] = {
+                    "positive": _unit(np.asarray(head["positive_prototype"], dtype=np.float64)),
+                    "negative": _unit(np.asarray(head["negative_prototype"], dtype=np.float64)),
+                    "positive_structure": dict(head.get("positive_structure", {})),
+                    "reference_recordings": set(map(str, head.get("reference_recordings", []))),
+                }
             return cls(
                 mode=str(payload.get("mode", "off")),
                 strength=strength,
@@ -237,6 +316,7 @@ class CompositionPreferenceAssist:
                     for item in payload.get("positive_evidence", [])
                     if item.get("dream_level") in (1, 3, 5)
                 },
+                level_heads=level_heads,
                 source_path=str(source.resolve()),
             )
         except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -255,7 +335,7 @@ class CompositionPreferenceAssist:
     def object_factor(
         self, object_id: str | None, recording: str | None = None, dream_level: int | None = None
     ) -> float:
-        """Lower favours D1-like embedding regions; contrast material is penalised."""
+        """Lower favours the accepted embedding region for this D-level."""
         if not self.active or not object_id:
             return 1.0
         if (
@@ -267,9 +347,16 @@ class CompositionPreferenceAssist:
         vector = self.embeddings.get(str(object_id))
         if vector is None:
             return 1.0
-        margin = float(np.dot(vector, self.positive) - np.dot(vector, self.negative))
+        head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
+        positive = head["positive"] if head else self.positive
+        negative = head["negative"] if head else self.negative
+        references = head["reference_recordings"] if head else self.reference_recordings
+        margin = float(np.dot(vector, positive) - np.dot(vector, negative))
         factor = float(np.exp(-self.strength * margin))
-        if dream_level in (3, 5) and recording in self.reference_recordings:
+        # Level-specific heads already learn the accepted material region.
+        # Library coverage supplies diversity, so a second reference penalty
+        # here would push the composer away from the listener's gold palette.
+        if head is None and dream_level in (3, 5) and recording in references:
             factor *= self.reference_reuse_penalty
         return float(max(0.76, min(1.28, factor)))
 
@@ -284,22 +371,26 @@ class CompositionPreferenceAssist:
 
     def target_event_count(self, dream_level: int, duration_sec: float) -> int | None:
         """Transfer the positive render's economy while preserving level depth."""
-        if not self.active or not self.positive_structure:
+        level_head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
+        structure = level_head["positive_structure"] if level_head else self.positive_structure
+        if not self.active or not structure:
             return None
-        rate = float(self.positive_structure.get("event_rate_per_minute", 0.0))
+        rate = float(structure.get("event_rate_per_minute", 0.0))
         if rate <= 0.0:
             return None
-        depth = {1: 1.0, 3: 1.08, 5: 1.24}.get(int(dream_level), 1.0)
+        depth = 1.0 if level_head else {1: 1.0, 3: 1.08, 5: 1.24}.get(int(dream_level), 1.0)
         target = rate * max(0.0, float(duration_sec)) / 60.0 * depth
         return max(1, int(round(target)))
 
     def role_factor(self, role: str, dream_level: int) -> float:
         """Softly transfer the positive render's role balance, not its samples."""
-        if not self.active or not self.positive_structure:
+        level_head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
+        structure = level_head["positive_structure"] if level_head else self.positive_structure
+        if not self.active or not structure:
             return 1.0
-        distribution = dict(self.positive_structure.get("role_distribution", {}))
+        distribution = dict(structure.get("role_distribution", {}))
         share = max(0.0, float(distribution.get(role, 0.0)))
-        level_shape = {
+        level_shape = {} if level_head else {
             1: {},
             3: {"gesture": 1.20, "texture": 1.06, "resonance": 0.88},
             5: {"gesture": 2.80, "texture": 0.90, "resonance": 0.25},
@@ -319,6 +410,7 @@ class CompositionPreferenceAssist:
                 "event_rate_per_minute"
             ),
             "material_anchor_levels": sorted(self.positive_dream_levels),
+            "level_specific_heads": sorted(self.level_heads),
             "source_path": self.source_path,
             "error": self.error,
         }

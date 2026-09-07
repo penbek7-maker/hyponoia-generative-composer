@@ -265,6 +265,15 @@ _UNICODE_INTENT_RULES = (
         "updates": {"musicality_weight": 0.06},
     },
     {
+        "intent": "increase_bloom",
+        "patterns": (
+            r"\b(?:μεγαλυτερο|εντονοτερο|ισχυροτερο) bloom\b",
+            r"\bπιο εντυπωσιακ\w*\b",
+            r"\bπερισσοτερ\w* (?:κορυφωση|κλιμακωση|δραματικη ενταση)\b",
+        ),
+        "updates": {"bloom_weight": 0.07},
+    },
+    {
         "intent": "increase_synthetic_material",
         "patterns": (
             r"\bπερισσοτερ(?:α|ο)\s+(?:synth|synthesizer|συνθεσαιζερ|συνθετικ(?:ο|α))\b",
@@ -369,6 +378,7 @@ _UNICODE_INTENT_RULES = (
             r"\bπερισσοτερ\w*\s+layers?\b",
             r"\bπλουσιοτερ(?:ο|η|α)\b",
             r"\bμεγαλυτερ(?:ο|η)\s+ηχητικ(?:ο|η)\s+βαθος\b",
+            r"\b(?:λιγο|πολυ|πιο|αρκετα)?\s*αδει(?:ο|α|ος|ες)\b",
         ),
         "updates": {"richness_weight": 0.07},
     },
@@ -379,6 +389,8 @@ _UNICODE_INTENT_RULES = (
             r"\bνα εξελισσ(?:εται|ονται)\b",
             r"\bαναπτυξ(?:ε|η)\s+(?:τους\s+)?(?:ηχους|υλικα|δειγματα)\b",
             r"\b(?:βαρετ\w*|στασιμ\w*|αδιαφορ\w*)\b",
+            r"\bδημιουργικ\w*\s+(?:αναπτυξη|εξελιξη|ενταση)\b",
+            r"\b(?:εξελιξη|αναπτυξη)\s+(?:των\s+)?(?:μουσικων\s+)?(?:loops?|λουπ\w*)\b",
         ),
         "updates": {"material_development_weight": 0.08},
     },
@@ -390,6 +402,8 @@ _UNICODE_INTENT_RULES = (
             r"\bπαραειναι\s+αργ(?:ο|η)\b",
             r"\bπολυ\s+αργ(?:ο|η)\b",
             r"\bυποτονικ(?:ο|η|α)\b",
+            r"\b(?:πιο|περισσοτερο|πολυ|σουπερ)\s+(?:δυναμικ\w*|ενεργειακ\w*|παθιασμεν\w*)\b",
+            r"\bπερισσοτερ\w*\s+(?:δημιουργικ\w*\s+)?ενταση\b",
         ),
         "updates": {"activity_weight": 0.07},
     },
@@ -490,6 +504,11 @@ def parse_feedback_comment(comment: str, default_target_level: Any = None) -> di
     ):
         matched = next((pattern for pattern in rule["patterns"] if re.search(pattern, search_text)), None)
         if not matched:
+            continue
+        if rule["intent"] == "increase_structured_granulation" and (
+            re.search(r"\b(?:keep|preserve)\b.{0,60}\bgranulation\b", normalised)
+            or re.search(r"\b(?:κρατ\w*|διατηρ\w*)\b.{0,60}\b(?:granulation|κοκκοποιηση)\b", unicode_normalised)
+        ):
             continue
         updates = dict(rule["updates"])
         actions.append({
