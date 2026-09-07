@@ -1,0 +1,64 @@
+import json
+import sys
+
+import pytest
+
+from composition_preference_v1 import CompositionPreferenceAssist
+from hyponoia_runtime import PROJECT_DIR, generator_command, runtime_status
+from representation_assist_v1 import RepresentationAssist
+
+
+def test_packaged_deep_learning_assets_are_active():
+    representation = RepresentationAssist.from_config(PROJECT_DIR / "representation_config.json")
+    preference = CompositionPreferenceAssist.from_file(
+        PROJECT_DIR / "phase2_artifacts" / "composition_preference_gold.json"
+    )
+
+    assert representation.active is True
+    assert representation.snapshot()["embedding_count"] == 2566
+    assert preference.active is True
+    assert preference.snapshot()["level_specific_heads"] == [1, 3, 5]
+
+
+def test_runtime_status_requires_memory_but_reports_models(tmp_path):
+    (tmp_path / "phase2_artifacts").mkdir()
+    embeddings = {"a": [1.0, 0.0], "b": [0.0, 1.0]}
+    (tmp_path / "phase2_artifacts" / "embeddings.json").write_text(json.dumps(embeddings))
+    (tmp_path / "representation_config.json").write_text(json.dumps({
+        "mode": "assist",
+        "embeddings_path": "phase2_artifacts/embeddings.json",
+        "strength": 0.35,
+    }))
+    (tmp_path / "phase2_artifacts" / "preference.json").write_text(json.dumps({
+        "schema_version": "composition_preference_v1",
+        "mode": "assist",
+        "strength": 0.3,
+        "embeddings_path": "embeddings.json",
+        "positive_prototype": [1.0, 0.0],
+        "negative_prototype": [0.0, 1.0],
+        "positive_evidence": [{"dream_level": 1}],
+    }))
+    (tmp_path / "hyponoia_user_config.json").write_text(json.dumps({
+        "composition_preference": "phase2_artifacts/preference.json",
+    }))
+
+    status = runtime_status(tmp_path)
+
+    assert status["representation"]["active"] is True
+    assert status["composition_preference"]["active"] is True
+    assert status["memory_ready"] is False
+    assert status["ready_to_generate"] is False
+
+
+def test_generator_command_is_safe_and_uses_current_python(tmp_path):
+    command = generator_command(3, root_pitch=2, scale="minor", confidence=0.8, project_dir=tmp_path)
+    assert command == [
+        sys.executable,
+        str(tmp_path / "generator_v3_memory_bloom_smooth.py"),
+        "3",
+        "2",
+        "minor",
+        "0.8",
+    ]
+    with pytest.raises(ValueError):
+        generator_command(2, project_dir=tmp_path)

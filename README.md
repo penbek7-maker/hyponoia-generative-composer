@@ -4,6 +4,25 @@ Hyponoia is an AI-assisted generative music system for adaptive soundscape compo
 
 The system selects and transforms musical materials from a user-defined audio memory. Human evaluation and an internal critic progressively influence global compositional weights and sample-level selection values.
 
+## Desktop quick start (macOS)
+
+1. Double-click `Install Hyponoia.command` once.
+2. Double-click `Open Hyponoia.command`.
+3. In **Library**, choose a folder containing WAV files and press **Update library**.
+4. In **Generate & Listen**, choose D1, D3 or D5 and press **Generate**.
+5. Listen, then use **Feedback** to write or speak naturally in Greek or English.
+6. Generate again to hear the bounded learned changes.
+
+Around 100 recordings are recommended, not required. The user can add, remove,
+replace or rename WAV files later. Hyponoia reuses unchanged analyses and deep
+embeddings, creates embeddings only for new/changed sound objects, and removes
+inactive embeddings without a complete retraining run.
+
+The repository includes the frozen 32-dimensional representation model, 2,566
+calibrated sound-object embeddings and the locked D1/D3/D5 gold preference head.
+The gold head guides material and structure without copying the three reference
+waveforms or banning the rest of a user's library.
+
 ## 1. Requirements
 
 * Python 3.10 or newer
@@ -237,8 +256,10 @@ musicality, richness, harmonicity, resonance, synthetic score, pitch/scale fit,
 phrase role and continuity with the preceding object. Human sample values then
 modify the weighted probability, while recording-history penalties, within-render
 usage penalties and an exploration bonus keep less-used material available.
-This is currently an explainable adaptive-learning layer; deep representation
-learning is intentionally reserved for the next research phase.
+This combines an explainable adaptive-learning layer with bounded deep
+representation assistance and a level-specific composition preference head.
+It is not presented as an end-to-end neural composer or as a generalisation
+claim from three accepted compositions.
 
 ## Main Files
 

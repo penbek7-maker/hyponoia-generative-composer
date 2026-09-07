@@ -33,7 +33,12 @@ memory_index_v3.json
 library_manifest_v1.json
 hyponoia_user_config.json
 library_backups/
-phase2_artifacts/
+# Ship the small frozen Phase-2 runtime assets required by a clean install.
+phase2_artifacts/*
+!phase2_artifacts/embeddings_v2.json
+!phase2_artifacts/encoder_v1.pt
+!phase2_artifacts/metric_adapter_v2.pt
+!phase2_artifacts/composition_preference_gold.json
 local_models/
 
 # Old development files and backups

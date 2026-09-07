@@ -251,6 +251,9 @@ def update_library(
             "memory_folder": str(library_root),
             "memory_file": str(index_path),
             "representation_config": str(project_root / "representation_config.json"),
+            "composition_preference": str(
+                project_root / "phase2_artifacts" / "composition_preference_gold.json"
+            ),
         },
     )
     result.update(

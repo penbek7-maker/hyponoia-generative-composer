@@ -67,7 +67,10 @@ REPRESENTATION_ASSIST = RepresentationAssist.disabled()
 REPRESENTATION_ASSIST_ROLES = frozenset({"gesture", "texture", "impact", "noise"})
 COMPOSITION_PREFERENCE_FILE = os.environ.get(
     "HYPNOIA_COMPOSITION_PREFERENCE",
-    USER_PATHS.get("composition_preference", "composition_preference_v1.json"),
+    USER_PATHS.get(
+        "composition_preference",
+        "phase2_artifacts/composition_preference_gold.json",
+    ),
 )
 COMPOSITION_PREFERENCE = CompositionPreferenceAssist.disabled()
 CURRENT_LIBRARY_COVERAGE_SNAPSHOT = {}

@@ -1,4 +1,17 @@
-# Hyponoia v2 Stabilised Baseline — macOS Installation
+# Hyponoia Phase 2 — macOS Installation
+
+## Simple installation
+
+For normal use, double-click:
+
+`Install Hyponoia.command`
+
+When installation finishes, double-click:
+
+`Open Hyponoia.command`
+
+The application then guides the user through Library, Generate, Listen and
+Feedback. The manual steps below remain available for diagnosis and research.
 
 ## 1. Keep the old project untouched
 
@@ -37,7 +50,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the 21 August 2026 Gate 1 release: `39 passed`.
+Expected result for the current Phase 2 branch: `147 passed`.
 
 ## 5. Transfer personal Hyponoia data
 
