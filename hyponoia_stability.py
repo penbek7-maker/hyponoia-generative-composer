@@ -377,6 +377,8 @@ _UNICODE_INTENT_RULES = (
             r"\bπερισσοτερ(?:α|ο)\s+(?:ηχητικα\s+)?(?:επιπεδα|στρωματα|υφες)\b",
             r"\bπερισσοτερ\w*\s+layers?\b",
             r"\bπλουσιοτερ(?:ο|η|α)\b",
+            r"\bπιο\s+πλουσι(?:ο|α|ες)\b",
+            r"\bπιο\s+γεματ(?:ο|η|α)\b",
             r"\bμεγαλυτερ(?:ο|η)\s+ηχητικ(?:ο|η)\s+βαθος\b",
             r"\b(?:λιγο|πολυ|πιο|αρκετα)?\s*αδει(?:ο|α|ος|ες)\b",
         ),
@@ -404,6 +406,7 @@ _UNICODE_INTENT_RULES = (
             r"\bυποτονικ(?:ο|η|α)\b",
             r"\b(?:πιο|περισσοτερο|πολυ|σουπερ)\s+(?:δυναμικ\w*|ενεργειακ\w*|παθιασμεν\w*)\b",
             r"\bπερισσοτερ\w*\s+(?:δημιουργικ\w*\s+)?ενταση\b",
+            r"\b(?:ακομη\s+)?πιο\s+εντον(?:ο|η|α)\b",
         ),
         "updates": {"activity_weight": 0.07},
     },
@@ -450,10 +453,11 @@ def feedback_target_scope(comment: str, default_target_level: Any = None) -> dic
     original = unicodedata.normalize("NFKC", str(comment)).casefold()
     ascii_text = _normalise_phrase(comment)
     explicit_global = bool(
-        re.search(r"\b(?:globally|global|generally|all levels|every level|across all levels)\b", ascii_text)
+        re.search(r"\b(?:globally|global|generally|all levels|every level|across all levels|for all)\b", ascii_text)
         or re.search(r"\bγενικ(?:ά|α)\b", original)
         or "σε όλα τα επίπεδα" in original
         or "σε ολα τα επιπεδα" in original
+        or bool(re.search(r"\bσε\s+(?:όλα|ολα)(?:\s|:|,|$)", original))
     )
     # A level mentioned inside prose (for example "this D3 sounds like D1")
     # is evidence, not a routing command. Only a leading labelled prefix may

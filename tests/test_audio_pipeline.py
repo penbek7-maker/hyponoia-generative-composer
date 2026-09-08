@@ -452,6 +452,42 @@ def test_positive_structure_controls_total_density_without_equalising_levels(mon
     assert sum(generator.planned_form_items(form, 5)) == 97
 
 
+def test_positive_structure_controls_exact_role_balance(monkeypatch):
+    class StructureAssist:
+        def target_role_distribution(self, dream_level):
+            assert dream_level == 1
+            return {
+                "gesture": 14 / 84,
+                "texture": 27 / 84,
+                "resonance": 36 / 84,
+                "noise": 5 / 84,
+                "impact": 2 / 84,
+            }
+
+        def role_factor(self, _role, _dream_level):
+            return 1.0
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", StructureAssist())
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    targets = generator.planned_role_targets(84, 1)
+    assert targets == {
+        "gesture": 14,
+        "texture": 27,
+        "resonance": 36,
+        "noise": 5,
+        "impact": 2,
+    }
+    remaining = dict(targets)
+    generated = {role: 0 for role in targets}
+    for _ in range(84):
+        role = generator.role_sequence_for_section(
+            "resolution", 1, remaining_role_counts=remaining
+        )
+        generated[role] += 1
+    assert generated == targets
+    assert sum(remaining.values()) == 0
+
+
 def test_d5_temporal_energy_is_audible_and_level_specific(monkeypatch):
     neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
@@ -515,7 +551,61 @@ def test_structured_granulation_is_bounded_and_feedback_controlled(monkeypatch):
     resonance_d5 = generator.structured_granulation(fragment.copy(), "resonance", 5)
     resonance_d3 = generator.structured_granulation(fragment.copy(), "resonance", 3)
     assert not np.array_equal(resonance_d5, fragment)
-    assert np.array_equal(resonance_d3, fragment)
+    assert not np.array_equal(resonance_d3, fragment)
+
+
+def test_crossfaded_rotation_removes_the_hard_loop_seam():
+    source = np.linspace(-0.9, 0.9, 48_000, dtype=np.float32)
+    shift = 12_000
+    hard = np.roll(source, shift)
+    soft = generator.crossfaded_circular_shift(source, shift)
+    assert len(soft) == len(source)
+    hard_jump = float(np.max(np.abs(np.diff(hard))))
+    soft_jump = float(np.max(np.abs(np.diff(soft))))
+    assert soft_jump < hard_jump * 0.10
+
+
+def test_declick_repairs_an_isolated_step_but_preserves_bright_oscillation():
+    smooth = np.sin(np.linspace(0.0, 35.0, 24_000)).astype(np.float32) * 0.2
+    stepped = smooth.copy()
+    stepped[12_000:] += 0.5
+    repaired = generator.repair_isolated_discontinuities(stepped)
+    assert len(repaired) == len(stepped)
+    assert np.max(np.abs(np.diff(repaired))) < np.max(np.abs(np.diff(stepped))) * 0.35
+
+    bright = np.sin(np.linspace(0.0, 8_000.0, 24_000)).astype(np.float32) * 0.35
+    untouched = generator.repair_isolated_discontinuities(bright)
+    assert np.allclose(untouched, bright)
+
+
+def test_density_glue_makes_d5_fullest_without_changing_shape(monkeypatch):
+    learned = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    learned["richness_weight"] = 1.12
+    learned["activity_weight"] = 1.14
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", learned)
+    t = np.linspace(0.0, 40.0, 48_000, dtype=np.float32)
+    source = (0.11 * np.sin(t) + 0.015 * np.sin(t * 9.0))[:, None]
+    source = np.repeat(source, 2, axis=1)
+    outputs = {level: generator.parallel_density_glue(source, level) for level in (1, 3, 5)}
+    assert all(value.shape == source.shape for value in outputs.values())
+    rms = {level: float(np.sqrt(np.mean(value * value))) for level, value in outputs.items()}
+    assert rms[5] > rms[3] > rms[1] > float(np.sqrt(np.mean(source * source)))
+
+
+def test_learned_evolution_changes_all_levels_without_losing_length_or_peak(monkeypatch):
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    source = np.sin(np.linspace(0.0, 120.0, 48_000)).astype(np.float32) * 0.7
+    assert np.array_equal(generator.learned_material_evolution(source, "texture", 1), source)
+
+    learned = dict(neutral)
+    learned["material_development_weight"] = 1.16
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", learned)
+    for level in (1, 3, 5):
+        evolved = generator.learned_material_evolution(source, "texture", level)
+        assert len(evolved) == len(source)
+        assert not np.array_equal(evolved, source)
+        assert np.max(np.abs(evolved)) <= np.max(np.abs(source)) * 1.081
 
 
 def test_material_plans_are_not_nested_between_d_levels(monkeypatch):
@@ -636,6 +726,94 @@ def test_library_exploration_expands_each_level_palette(monkeypatch):
         recording_limit, object_limit = generator.material_plan_limits(level)
         assert recording_limit > neutral_limits[level][0]
         assert object_limit > neutral_limits[level][1]
+
+
+def test_development_feedback_never_shrinks_any_level_palette(monkeypatch):
+    class NoStructureAssist:
+        def target_unique_recordings(self, _dream_level):
+            return None
+
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", NoStructureAssist())
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    neutral_limits = {level: generator.material_plan_limits(level) for level in (1, 3, 5)}
+    developed = dict(neutral)
+    developed["material_development_weight"] = 1.20
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", developed)
+    for level in (1, 3, 5):
+        assert generator.material_plan_limits(level)[0] >= neutral_limits[level][0]
+        assert generator.material_plan_limits(level)[1] >= neutral_limits[level][1]
+
+
+def test_accepted_structure_is_a_palette_floor_for_all_levels(monkeypatch):
+    class StructureAssist:
+        def target_unique_recordings(self, dream_level):
+            return {1: 8, 3: 12, 5: 18}[dream_level]
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", StructureAssist())
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    assert generator.material_plan_limits(1) == (8, 16)
+    assert generator.material_plan_limits(3) == (12, 24)
+    assert generator.material_plan_limits(5) == (18, 36)
+
+
+def test_composition_duration_favours_long_sustained_material(monkeypatch):
+    class DurationAssist:
+        def target_average_event_duration(self, dream_level):
+            return {1: 18.4, 3: 17.9, 5: 12.1}[dream_level]
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", DurationAssist())
+    short = {"duration": 0.9}
+    long = {"duration": 5.0}
+    for level in (1, 3, 5):
+        assert generator.composition_duration_selection_factor(short, "texture", level) > 1.0
+        assert generator.composition_duration_selection_factor(short, "resonance", level) > 1.0
+        assert generator.composition_duration_selection_factor(long, "resonance", level) <= 1.35
+        assert generator.composition_duration_selection_factor(short, "gesture", level) == 1.0
+
+
+def test_composition_sustain_bloom_uses_each_level_learned_duration(monkeypatch):
+    class DurationAssist:
+        def target_average_event_duration(self, dream_level):
+            return {1: 6.0, 3: 5.0, 5: 4.0}[dream_level]
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", DurationAssist())
+    source = np.sin(np.linspace(0.0, 40.0, generator.TARGET_SR)).astype(np.float32)
+    d1 = generator.composition_sustain_bloom(source, "texture", 1)
+    d5 = generator.composition_sustain_bloom(source, "texture", 5)
+    gesture = generator.composition_sustain_bloom(source, "gesture", 1)
+    assert len(d1) > len(d5) > len(source)
+    assert np.array_equal(gesture, source)
+    assert np.max(np.abs(d1)) <= np.max(np.abs(source)) + 1e-6
+
+
+def test_recording_dominance_guard_preserves_available_alternatives():
+    pool = [
+        {"recording": recording, "object_id": f"{recording}-{index}"}
+        for recording in ("dominant.wav", "other-a.wav", "other-b.wav")
+        for index in range(3)
+    ]
+    guarded = generator.diversify_overused_recordings(
+        pool,
+        {"dominant.wav": 30, "other-a.wav": 3, "other-b.wav": 2},
+        3,
+        palette_size=9,
+    )
+    assert guarded
+    assert all(obj["recording"] != "dominant.wav" for obj in guarded)
+
+
+def test_recording_dominance_guard_never_removes_the_only_viable_pool():
+    pool = [
+        {"recording": "dominant.wav", "object_id": f"object-{index}"}
+        for index in range(3)
+    ]
+    assert generator.diversify_overused_recordings(
+        pool,
+        {"dominant.wav": 30},
+        1,
+        palette_size=6,
+    ) == pool
 
 
 def test_critic_scores_have_dynamic_range_without_hard_ceiling(tmp_path):

@@ -25,6 +25,7 @@ from hyponoia_stability import (
     utc_timestamp,
 )
 from local_llm_feedback_v1 import LocalLLMUnavailable, interpret_with_local_llm
+from learning_profile_store_v1 import load_active_learning_profile
 
 
 INPUT_SOURCES = ("text", "voice")
@@ -95,13 +96,18 @@ def _normalise_profile(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_profile(profile_path: str | Path | None) -> dict[str, Any]:
-    if profile_path is None or not Path(profile_path).exists():
+    if profile_path is None:
         return _normalise_profile(DEFAULT_LEARNING_PROFILE)
     try:
-        profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        profile = load_active_learning_profile(profile_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid learning profile: {profile_path}") from exc
     return _normalise_profile(profile)
+
+
+def load_feedback_profile(profile_path: str | Path) -> dict[str, Any]:
+    """Public read path shared by the preview UI and the apply operation."""
+    return _load_profile(profile_path)
 
 
 def build_feedback_preview(

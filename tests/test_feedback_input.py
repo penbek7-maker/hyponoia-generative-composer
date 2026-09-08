@@ -5,6 +5,7 @@ import pytest
 
 from feedback_input_v1 import apply_feedback_preview, build_feedback_preview
 from human_feedback_v1 import DEFAULT_LEARNING_PROFILE
+from learning_profile_store_v1 import load_learning_seed
 from hyponoia_feedback_app import format_preview
 
 
@@ -94,8 +95,9 @@ def test_apply_requires_confirmation_and_persists_level_specific_evidence(tmp_pa
     assert event["source"] == "voice"
     assert event["target_levels"] == ["D5"]
     assert event["policy"]["shared_text_voice_interpreter"] is True
-    assert profile["level_weights"]["D1"] == DEFAULT_LEARNING_PROFILE["level_weights"]["D1"]
-    assert profile["level_weights"]["D3"] == DEFAULT_LEARNING_PROFILE["level_weights"]["D3"]
+    seed = load_learning_seed()
+    assert profile["level_weights"]["D1"] == seed["level_weights"]["D1"]
+    assert profile["level_weights"]["D3"] == seed["level_weights"]["D3"]
     assert profile["level_weights"]["D5"]["arpeggio_weight"] > 1.0
     assert profile["level_weights"]["D5"]["repetition_control"] > 1.0
     assert profile["history"][-1]["event_id"] == event["event_id"]

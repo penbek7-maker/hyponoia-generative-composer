@@ -34,6 +34,7 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
     root = Path(project_dir).resolve()
     config = load_user_config(root)
     memory_path = _resolve(root, config.get("memory_file", "memory_index_v3.json"))
+    memory_folder = _resolve(root, config.get("memory_folder", "alpha_memory"))
     representation_path = _resolve(
         root, config.get("representation_config", "representation_config.json")
     )
@@ -58,11 +59,20 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
 
     representation = RepresentationAssist.from_config(representation_path)
     preference = CompositionPreferenceAssist.from_file(preference_path)
+    source_wav_count = (
+        sum(1 for path in memory_folder.rglob("*") if path.is_file() and path.suffix.lower() == ".wav")
+        if memory_folder.is_dir()
+        else 0
+    )
+    source_audio_ready = source_wav_count > 0
     current_audio = root / "output" / "current.wav"
     return {
         "project_dir": str(root),
         "memory_path": str(memory_path),
+        "memory_folder": str(memory_folder),
         "memory_ready": recordings > 0 and sound_objects > 0 and memory_error is None,
+        "source_audio_ready": source_audio_ready,
+        "source_wav_count": source_wav_count,
         "memory_error": memory_error,
         "recordings": recordings,
         "sound_objects": sound_objects,
@@ -74,6 +84,7 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
             recordings > 0
             and sound_objects > 0
             and memory_error is None
+            and source_audio_ready
             and representation.active
             and preference.active
         ),

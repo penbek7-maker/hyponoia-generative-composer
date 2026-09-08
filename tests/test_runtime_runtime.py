@@ -47,6 +47,7 @@ def test_runtime_status_requires_memory_but_reports_models(tmp_path):
     assert status["representation"]["active"] is True
     assert status["composition_preference"]["active"] is True
     assert status["memory_ready"] is False
+    assert status["source_audio_ready"] is False
     assert status["ready_to_generate"] is False
 
 

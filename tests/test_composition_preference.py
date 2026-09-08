@@ -68,6 +68,10 @@ def test_whole_render_preference_favours_positive_embedding_region(tmp_path):
     assert assist.target_event_count(1, 180.0) == 84
     assert assist.target_event_count(3, 180.0) == 91
     assert assist.target_event_count(5, 180.0) == 104
+    assert assist.target_average_event_duration(1) == 18.4
+    assert assist.target_unique_recordings(1) == 2
+    assert assist.target_unique_objects(1) == 2
+    assert abs(sum(assist.target_role_distribution(1).values()) - 1.0) < 1e-9
     assert assist.role_factor("resonance", 3) > assist.role_factor("noise", 3)
 
 
@@ -75,6 +79,10 @@ def test_missing_preference_model_fails_safe(tmp_path):
     assist = CompositionPreferenceAssist.from_file(tmp_path / "missing.json")
     assert assist.active is False
     assert assist.object_factor("anything") == 1.0
+    assert assist.target_average_event_duration(1) is None
+    assert assist.target_unique_recordings(1) is None
+    assert assist.target_unique_objects(1) is None
+    assert assist.target_role_distribution(1) == {}
 
 
 def test_level_specific_heads_preserve_each_accepted_form(tmp_path):

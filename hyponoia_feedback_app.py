@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import copy
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from feedback_input_v1 import apply_feedback_preview, build_feedback_preview
-from human_feedback_v1 import DEFAULT_LEARNING_PROFILE
+from feedback_input_v1 import apply_feedback_preview, build_feedback_preview, load_feedback_profile
 from voice_feedback_v1 import (
     LocalWhisperTranscriber,
     VoiceRecorder,
@@ -336,18 +334,14 @@ class FeedbackApp:
 
     def show_preview(self) -> None:
         text = self.comment.get("1.0", "end").strip()
-        profile = copy.deepcopy(DEFAULT_LEARNING_PROFILE)
-        if PROFILE_PATH.exists():
-            try:
-                import json
-
-                profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                messagebox.showerror(
-                    "Δεν μπορώ να διαβάσω το feedback",
-                    "Το υπάρχον learning_profile.json δεν είναι έγκυρο. Δεν άλλαξα τίποτα.",
-                )
-                return
+        try:
+            profile = load_feedback_profile(PROFILE_PATH)
+        except ValueError:
+            messagebox.showerror(
+                "Δεν μπορώ να διαβάσω το feedback",
+                "Το υπάρχον learning_profile.json δεν είναι έγκυρο. Δεν άλλαξα τίποτα.",
+            )
+            return
         try:
             self.preview = build_feedback_preview(
                 text,

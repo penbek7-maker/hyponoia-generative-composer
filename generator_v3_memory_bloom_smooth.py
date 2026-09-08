@@ -27,6 +27,7 @@ from library_coverage_v1 import (
     update_recording_coverage,
 )
 from representation_assist_v1 import RepresentationAssist
+from learning_profile_store_v1 import load_active_learning_profile
 
 USER_CONFIG_FILE = os.environ.get("HYPNOIA_USER_CONFIG", "hyponoia_user_config.json")
 
@@ -58,7 +59,7 @@ SAMPLE_LEARNING_FILE = os.environ.get(
 )
 RENDER_REPORT_FILE = os.environ.get("HYPNOIA_RENDER_REPORT_FILE", "render_report.json")
 RENDER_REPORT_FOLDER = os.environ.get("HYPNOIA_RENDER_REPORT_FOLDER", "render_reports")
-GENERATOR_REVISION = "2026-09-06-library-coverage-memory-10"
+GENERATOR_REVISION = "2026-09-08-declick-evolution-12"
 REPRESENTATION_CONFIG_FILE = os.environ.get(
     "HYPNOIA_REPRESENTATION_CONFIG",
     USER_PATHS.get("representation_config", "representation_config.json"),
@@ -383,8 +384,7 @@ def load_learning_weights(dream_level=None):
     """Combine shared rating controls with only the active D-level text profile."""
     weights = dict(DEFAULT_LEARNING_WEIGHTS)
     try:
-        with open(LEARNING_FILE, "r") as f:
-            data = json.load(f)
+        data = load_active_learning_profile(LEARNING_FILE)
         incoming = data.get("weights", {})
         level_name = f"D{int(dream_level)}" if dream_level in (1, 3, 5) else None
         level_incoming = data.get("level_weights", {}).get(level_name, {}) if level_name else {}
@@ -394,9 +394,7 @@ def load_learning_weights(dream_level=None):
                 weights[key] = float(max(0.5, min(1.8, float(value))))
             except (TypeError, ValueError):
                 pass
-    except FileNotFoundError:
-        print("Learning profile not found; using neutral weights.")
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         print("Could not read learning profile; using neutral weights:", exc)
 
     print("Learning weights:")
@@ -426,7 +424,7 @@ def composition_feedback_audio_snapshot():
     development = learned_factor("material_development_weight", 2.8, 0.80, 1.55)
     activity = learned_factor("activity_weight", 1.3, 0.92, 1.18)
     release = learned_factor("transition_smoothness_weight", 3.0, 0.88, 1.50)
-    granulation = learned_factor("structured_granulation_weight", 2.2, 0.82, 2.00)
+    granulation = learned_factor("structured_granulation_weight", 2.2, 0.82, 2.40)
     return {
         "low_frequency_gain": float(1.0 / low_control),
         "low_mid_masking_gain": float(1.0 / max(1.0, clarity)),
@@ -443,7 +441,7 @@ def composition_feedback_audio_snapshot():
         "release_tail_strength": float(max(0.0, release - 1.0)),
         "related_layer_overlap_strength": float(max(0.0, release - 1.0)),
         "structured_granulation_drive": float(granulation),
-        "structured_granulation_wet": float(max(0.0, min(0.62, (granulation - 1.0) * 0.68))),
+        "structured_granulation_wet": float(max(0.0, min(0.78, (granulation - 1.0) * 0.82))),
     }
 
 
@@ -787,14 +785,122 @@ def long_layer_diversity_factor(obj, dream_level, usage_counts=None):
 
 
 def material_plan_limits(dream_level):
-    """Balanced per-render palette: focused, but never reduced to a tiny loop."""
+    """Balanced palette that cannot shrink when development is requested.
+
+    Development describes what happens *inside and across* phrases.  Earlier
+    versions also treated it as a request for a narrower palette, which made a
+    request such as "more evolution" collapse D1 from six recordings to five.
+    Accepted whole-render breadth is now a floor for every D level.
+    """
     recording_base = {1: 6, 3: 10, 5: 16}[dream_level]
     object_base = {1: 12, 3: 20, 5: 30}[dream_level]
-    focus = learned_factor("material_development_weight", 1.2, 0.88, 1.18)
     breadth = learned_factor("exploration_weight", 1.6, 0.90, 1.30)
-    recordings = max(3, int(round(recording_base * breadth / focus)))
-    objects = max(recordings, int(round(object_base * breadth / focus)))
+    development = learned_factor("material_development_weight", 1.2, 0.88, 1.18)
+    expansion = max(1.0, breadth) * (1.0 + 0.24 * max(0.0, development - 1.0))
+    target_method = getattr(COMPOSITION_PREFERENCE, "target_unique_recordings", None)
+    target_recordings = target_method(dream_level) if callable(target_method) else None
+    if target_recordings is not None:
+        # The positive structure defines coherent per-render breadth. Library
+        # exploration may open it slightly, while coverage rotates through the
+        # rest of the library across later renders.
+        structure_expansion = (
+            1.0
+            + 0.40 * max(0.0, breadth - 1.0)
+            + 0.20 * max(0.0, development - 1.0)
+        )
+        recordings = max(
+            int(target_recordings),
+            int(round(float(target_recordings) * structure_expansion)),
+        )
+        object_method = getattr(COMPOSITION_PREFERENCE, "target_unique_objects", None)
+        target_objects = object_method(dream_level) if callable(object_method) else None
+        if target_objects is not None:
+            object_expansion = 1.0 + 0.28 * max(0.0, breadth - 1.0)
+            objects = max(
+                recordings,
+                int(round(float(target_objects) * object_expansion)),
+            )
+        else:
+            objects = max(
+                recordings * 2,
+                int(round(object_base * recordings / recording_base)),
+            )
+    else:
+        recordings = max(recording_base, int(round(recording_base * expansion)))
+        objects = max(object_base, recordings, int(round(object_base * expansion)))
     return recordings, objects
+
+
+def composition_duration_selection_factor(obj, desired_role, dream_level):
+    """Prefer material capable of reaching the accepted phrase duration.
+
+    The learned target comes from the complete positive D1/D3/D5 render, while
+    the factors below only estimate the transform already applied by each role.
+    This keeps short synth gestures available without letting sub-second clips
+    become every sustained layer.
+    """
+    if desired_role not in {"texture", "resonance"}:
+        return 1.0
+    target_method = getattr(
+        COMPOSITION_PREFERENCE, "target_average_event_duration", None
+    )
+    target = target_method(dream_level) if callable(target_method) else None
+    if target is None or target <= 0.0:
+        return 1.0
+    role_target = float(target) * (1.18 if desired_role == "resonance" else 0.90)
+    transform_estimate = 5.4 if desired_role == "resonance" else 3.9
+    predicted = max(0.05, float(obj.get("duration", 0.0)) * transform_estimate)
+    if predicted < role_target:
+        shortfall = role_target / predicted
+        return float(min(2.75, 1.0 + 0.48 * (shortfall - 1.0)))
+    excess = predicted / role_target
+    return float(min(1.35, 1.0 + 0.08 * max(0.0, excess - 1.6)))
+
+
+def recording_can_sustain(rec_objects, dream_level):
+    """Whether one recording can contribute an evolving sustained phrase."""
+    target_method = getattr(
+        COMPOSITION_PREFERENCE, "target_average_event_duration", None
+    )
+    target = target_method(dream_level) if callable(target_method) else None
+    minimum_source = max(2.0, (float(target) / 5.2) if target else 2.8)
+    for obj in rec_objects:
+        role = obj.get("role")
+        if role is None and "features" in obj and "duration" in obj:
+            role = classify_object(obj)
+        if role in {"texture", "resonance"} and float(obj.get("duration", 0.0)) >= minimum_source:
+            return True
+    return False
+
+
+def diversify_overused_recordings(pool, usage_counts, dream_level, palette_size):
+    """Stop one WAV from swallowing a learned multi-recording palette."""
+    if not usage_counts or len(pool) < 3 or palette_size <= 1:
+        return pool
+    total = sum(max(0, int(value)) for value in usage_counts.values())
+    if total < 4:
+        return pool
+    fair_share = total / max(1, int(palette_size))
+    dominance = {1: 2.75, 3: 2.25, 5: 1.85}[dream_level]
+    dynamic_limit = max(4.0, fair_share * dominance)
+    event_method = getattr(COMPOSITION_PREFERENCE, "target_event_count", None)
+    target_events = (
+        event_method(dream_level, OUTPUT_DURATION) if callable(event_method) else None
+    )
+    accepted_share_limit = {1: 0.42, 3: 0.31, 5: 0.20}[dream_level]
+    learned_limit = (
+        max(4.0, float(target_events) * accepted_share_limit)
+        if target_events is not None
+        else dynamic_limit
+    )
+    limit = min(dynamic_limit, learned_limit)
+    overused = {
+        recording
+        for recording, count in usage_counts.items()
+        if float(count) >= limit
+    }
+    diversified = [obj for obj in pool if obj.get("recording") not in overused]
+    return diversified if len(diversified) >= 3 else pool
 
 
 def sample_key(obj):
@@ -1208,6 +1314,25 @@ def planned_form_items(form, dream_level):
     return [int(value) for value in allocated]
 
 
+def planned_role_targets(total_events, dream_level):
+    """Convert the accepted role distribution into exact per-render counts."""
+    target_method = getattr(COMPOSITION_PREFERENCE, "target_role_distribution", None)
+    distribution = target_method(dream_level) if callable(target_method) else {}
+    if not distribution or total_events <= 0:
+        return None
+    roles = ("gesture", "texture", "resonance", "noise", "impact")
+    raw = {role: max(0.0, float(distribution.get(role, 0.0))) * total_events for role in roles}
+    allocated = {role: int(np.floor(value)) for role, value in raw.items()}
+    while sum(allocated.values()) < total_events:
+        role = max(roles, key=lambda item: raw[item] - allocated[item])
+        allocated[role] += 1
+    while sum(allocated.values()) > total_events:
+        candidates = [role for role in roles if allocated[role] > 0]
+        role = min(candidates, key=lambda item: raw[item] - allocated[item])
+        allocated[role] -= 1
+    return allocated
+
+
 def build_material_plan(objects, profile, dream_level, sample_profile=None):
     by_recording = {}
 
@@ -1330,7 +1455,10 @@ def build_material_plan(objects, profile, dream_level, sample_profile=None):
         learned_factor("synthetic_material_weight", 3.0, 0.85, 1.55) - 1.0,
     )
     if confirmed_synth_request > 0.04:
-        quota = min(5, len([rec for rec in by_recording if LIBRARY_SOURCE_LABELS.get(rec) == "synthetic"]))
+        quota = min(
+            max(1, int(round(recording_limit * 0.34))),
+            len([rec for rec in by_recording if LIBRARY_SOURCE_LABELS.get(rec) == "synthetic"]),
+        )
         available = [rec for _, rec in ranked if LIBRARY_SOURCE_LABELS.get(rec) == "synthetic"]
         selected = [rec for rec in allowed if LIBRARY_SOURCE_LABELS.get(rec) == "synthetic"]
         replacements = [rec for rec in available if rec not in allowed]
@@ -1347,7 +1475,10 @@ def build_material_plan(objects, profile, dream_level, sample_profile=None):
         learned_factor("instrument_material_weight", 3.2, 0.82, 1.55) - 1.0,
     )
     if instrument_request > 0.04:
-        quota = min(4, len([rec for rec in by_recording if LIBRARY_SOURCE_LABELS.get(rec) == "instrument_hybrid"]))
+        quota = min(
+            max(1, int(round(recording_limit * 0.25))),
+            len([rec for rec in by_recording if LIBRARY_SOURCE_LABELS.get(rec) == "instrument_hybrid"]),
+        )
         available = [rec for _, rec in ranked if LIBRARY_SOURCE_LABELS.get(rec) == "instrument_hybrid"]
         selected = [rec for rec in allowed if LIBRARY_SOURCE_LABELS.get(rec) == "instrument_hybrid"]
         replacements = [rec for rec in available if rec not in allowed]
@@ -1361,6 +1492,28 @@ def build_material_plan(objects, profile, dream_level, sample_profile=None):
             new = replacements.pop(0)
             allowed[allowed.index(old)] = new
             selected.append(new)
+
+    # A whole render cannot bloom if every chosen source is a short gesture.
+    # Keep synth and instrument floors above, then reserve enough recordings
+    # that contain genuine texture/resonance material.  The required duration
+    # comes from each accepted D-level structure, not from one global preset.
+    sustain_quota = min(recording_limit, max(2, int(round(recording_limit * 0.34))))
+    sustained = [rec for rec in allowed if recording_can_sustain(by_recording[rec], dream_level)]
+    sustained_candidates = [
+        rec
+        for _, rec in ranked
+        if rec not in allowed and recording_can_sustain(by_recording[rec], dream_level)
+    ]
+    replaceable = [
+        rec
+        for rec in reversed(allowed)
+        if rec not in protected and not recording_can_sustain(by_recording[rec], dream_level)
+    ]
+    while len(sustained) < sustain_quota and sustained_candidates and replaceable:
+        outgoing = replaceable.pop(0)
+        incoming = sustained_candidates.pop(0)
+        allowed[allowed.index(outgoing)] = incoming
+        sustained.append(incoming)
 
     print("Material plan:", allowed)
     return set(allowed)
@@ -1405,6 +1558,12 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
                 pool = fallback
 
     pool = learned_synthetic_candidate_pool(pool)
+    pool = diversify_overused_recordings(
+        pool,
+        usage_counts,
+        dream_level,
+        len(CURRENT_MATERIAL_PLAN),
+    )
 
     scored = []
 
@@ -1417,6 +1576,7 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
         score *= COMPOSITION_PREFERENCE.object_factor(
             obj.get("object_id"), obj.get("recording"), dream_level
         )
+        score *= composition_duration_selection_factor(obj, desired_role, dream_level)
 
         # The D5 preference controls must make an audible selection difference,
         # while D1/D3 retain their established behaviour.
@@ -1912,6 +2072,71 @@ def base_reverb_wet(dream_level):
     return {1: 0.075, 3: 0.100, 5: 0.125}[dream_level]
 
 
+def parallel_density_glue(output, dream_level):
+    """Make higher dream levels fuller without flattening their transients."""
+    source = np.asarray(output, dtype=np.float32)
+    richness = learned_factor("richness_weight", 2.5, 0.90, 1.45)
+    activity = learned_factor("activity_weight", 1.8, 0.92, 1.42)
+    base_mix = {1: 0.10, 3: 0.15, 5: 0.40}[dream_level]
+    requested = max(0.0, richness - 1.0) + 0.65 * max(0.0, activity - 1.0)
+    wet = min(0.58, base_mix + 0.16 * requested)
+    drive = {1: 1.70, 3: 1.90, 5: 2.80}[dream_level]
+    compressed = np.tanh(source * drive) / np.tanh(drive)
+    return (source * (1.0 - wet) + compressed * wet).astype(np.float32)
+
+
+def repair_isolated_discontinuities(audio, threshold=0.075, ratio=9.0):
+    """Repair isolated digital seams while preserving real bright transients.
+
+    A click is a single derivative far larger than its immediate neighbourhood.
+    Sustained high-frequency synth material has many neighbouring large slopes
+    and is therefore left untouched.
+    """
+    source = np.asarray(audio, dtype=np.float32)
+    mono_input = source.ndim == 1
+    work = source[:, None].copy() if mono_input else source.copy()
+    if len(work) < 256:
+        return source.copy()
+
+    radius = 24
+    repair_span = max(24, int(0.0015 * TARGET_SR))
+    for channel in range(work.shape[1]):
+        signal = work[:, channel]
+        derivative = np.diff(signal)
+        magnitude = np.abs(derivative)
+        padded = np.pad(magnitude, (radius, radius), mode="edge")
+        cumulative = np.concatenate(([0.0], np.cumsum(padded, dtype=np.float64)))
+        window = 2 * radius + 1
+        local_sum = cumulative[window:] - cumulative[:-window]
+        neighbourhood = np.maximum(
+            1e-5,
+            (local_sum - magnitude) / max(1, window - 1),
+        )
+        candidates = np.flatnonzero(
+            (magnitude > float(threshold))
+            & (magnitude > float(ratio) * neighbourhood)
+        )
+        last_right = -1
+        for index in candidates:
+            left = max(1, int(index) - repair_span)
+            right = min(len(signal) - 2, int(index) + 1 + repair_span)
+            if left <= last_right or right - left < 8:
+                continue
+            count = right - left + 1
+            t = np.linspace(0.0, 1.0, count, dtype=np.float32)
+            y0, y1 = float(signal[left]), float(signal[right])
+            slope0 = float(signal[left] - signal[left - 1]) * count
+            slope1 = float(signal[right + 1] - signal[right]) * count
+            h00 = 2 * t**3 - 3 * t**2 + 1
+            h10 = t**3 - 2 * t**2 + t
+            h01 = -2 * t**3 + 3 * t**2
+            h11 = t**3 - t**2
+            signal[left:right + 1] = h00 * y0 + h10 * slope0 + h01 * y1 + h11 * slope1
+            last_right = right
+        work[:, channel] = signal
+    return work[:, 0] if mono_input else work
+
+
 def final_mix(output, dream_level):
     # Global ambience/resonance polish. Kept subtle: musical glue, not soup.
     length = len(output)
@@ -1934,9 +2159,11 @@ def final_mix(output, dream_level):
     wet = base_reverb_wet(dream_level) * ambient_scale
     wet *= composition_feedback_audio_snapshot()["reverb_clarity_gain"]
     output = simple_stereo_reverb(output, wet=wet)
+    output = parallel_density_glue(output, dream_level)
 
     # Soft saturation for body, less aggressive than previous versions.
     output = np.tanh(output * 1.14)
+    output = repair_isolated_discontinuities(output)
 
     peak = np.max(np.abs(output)) + 1e-9
     output = output / peak * 0.88
@@ -1952,10 +2179,14 @@ def final_mix(output, dream_level):
     output[:fade_in] *= np.linspace(0, 1, fade_in)[:, None]
     output[-fade_out:] *= np.linspace(1, 0, fade_out)[:, None]
 
+    # A seam that was quiet before normalisation can become audible after the
+    # final gain and form envelope, so verify delivery-level samples once more.
+    output = repair_isolated_discontinuities(output, threshold=0.06, ratio=8.0)
+
     return output.astype(np.float32)
 
 
-def role_sequence_for_section(section_name, dream_level):
+def role_sequence_for_section(section_name, dream_level, remaining_role_counts=None):
     """
     Role probability tables with a stronger sense of family.
     This version favours ambience, recurrence, and musical continuity;
@@ -2008,12 +2239,30 @@ def role_sequence_for_section(section_name, dream_level):
         for role, weight in table
     ]
 
+    if remaining_role_counts is not None:
+        present = {role for role, _ in table}
+        table.extend(
+            (role, 0.02)
+            for role in ("gesture", "texture", "resonance", "noise", "impact")
+            if role not in present and remaining_role_counts.get(role, 0) > 0
+        )
+
     roles = [r for r, _ in table]
     weights = np.array([w for _, w in table], dtype=np.float64)
+    if remaining_role_counts is not None:
+        remaining = np.asarray(
+            [max(0, int(remaining_role_counts.get(role, 0))) for role in roles],
+            dtype=np.float64,
+        )
+        if float(remaining.sum()) > 0.0:
+            weights *= remaining
     weights /= weights.sum()
 
     idx = np.random.choice(len(roles), p=weights)
-    return roles[idx]
+    selected = roles[idx]
+    if remaining_role_counts is not None and remaining_role_counts.get(selected, 0) > 0:
+        remaining_role_counts[selected] -= 1
+    return selected
 
 
 def maybe_variation_transform(frag, role, dream_level):
@@ -2256,16 +2505,17 @@ def structured_granulation(frag, role, dream_level):
     """
     snapshot = composition_feedback_audio_snapshot()
     wet = snapshot["structured_granulation_wet"]
-    eligible_roles = {"gesture", "texture", "noise"}
-    if dream_level == 5:
-        # At D5, sustained natural/organic material also needs to develop rather
-        # than remain as an untouched bed. It receives a gentler granular mix.
-        eligible_roles.add("resonance")
+    eligible_roles = {"gesture", "texture", "noise", "resonance"}
     if wet <= 1e-6 or role not in eligible_roles or len(frag) < 512:
         return np.asarray(frag, dtype=np.float32)
 
-    role_scale = {"gesture": 0.88, "texture": 1.0, "noise": 0.76, "resonance": 0.62}[role]
-    wet *= role_scale * {1: 0.62, 3: 0.82, 5: 1.0}[dream_level]
+    if role == "resonance":
+        # Resonant beds evolve too, but remain recognisable and never become a
+        # full-strength granular wash.
+        role_scale = {1: 0.38, 3: 0.48, 5: 0.62}[dream_level]
+    else:
+        role_scale = {"gesture": 0.88, "texture": 1.0, "noise": 0.76}[role]
+    wet *= role_scale * {1: 0.82, 3: 0.95, 5: 1.0}[dream_level]
     drive = snapshot["structured_granulation_drive"]
     base_grain_ms = {1: 155.0, 3: 115.0, 5: 82.0}[dream_level]
     if role == "resonance":
@@ -2308,12 +2558,152 @@ def structured_granulation(frag, role, dream_level):
         voice_audio[active] /= weights[active]
         voice_audio[~active] = frag[~active]
         granular += voice_audio / voice_count
-    mixed = np.asarray(frag, dtype=np.float32) * (1.0 - wet) + granular * wet
+    # The granular identity flowers through the phrase instead of remaining a
+    # static effect. This strengthens development without adding or removing
+    # composition events, so density and palette breadth stay unchanged.
+    progress = np.linspace(0.0, 1.0, len(frag), dtype=np.float32)
+    evolution = 0.58 + 0.42 * np.sin(np.pi * progress / 2.0) ** 1.35
+    local_wet = np.clip(wet * evolution, 0.0, 0.76)
+    dry = np.asarray(frag, dtype=np.float32)
+    mixed = dry * (1.0 - local_wet) + granular * local_wet
+    dry_rms = float(np.sqrt(np.mean(dry * dry))) + 1e-9
+    mixed_rms = float(np.sqrt(np.mean(mixed * mixed))) + 1e-9
+    mixed *= min(1.14, dry_rms / mixed_rms)
     source_peak = float(np.max(np.abs(frag))) + 1e-9
     mixed_peak = float(np.max(np.abs(mixed))) + 1e-9
     if mixed_peak > source_peak:
         mixed *= source_peak / mixed_peak
     return mixed.astype(np.float32)
+
+
+def crossfaded_circular_shift(source, shift, crossfade_sec=0.025):
+    """Rotate a phrase without the hard wrap seam produced by ``np.roll``."""
+    audio = np.asarray(source, dtype=np.float32)
+    if len(audio) < 8:
+        return audio.copy()
+    shift = int(shift) % len(audio)
+    if shift == 0:
+        return audio.copy()
+    left = audio[-shift:]
+    right = audio[:-shift]
+    overlap = min(
+        max(8, int(float(crossfade_sec) * TARGET_SR)),
+        len(left) // 2,
+        len(right) // 2,
+    )
+    if overlap < 8:
+        return audio.copy()
+    phase = np.linspace(0.0, np.pi / 2.0, overlap, dtype=np.float32)
+    joined = left[-overlap:] * np.cos(phase) ** 2 + right[:overlap] * np.sin(phase) ** 2
+    crossfaded = np.concatenate((left[:-overlap], joined, right[overlap:])).astype(np.float32)
+    # Restore the exact original duration; the removed overlap is only a few
+    # milliseconds and this avoids changing the learned phrase-length target.
+    old = np.arange(len(crossfaded), dtype=np.float64)
+    new = np.linspace(0.0, len(crossfaded) - 1.0, len(audio), dtype=np.float64)
+    return np.interp(new, old, crossfaded).astype(np.float32)
+
+
+def learned_material_evolution(frag, role, dream_level):
+    """Give every D-level bounded spectral and amplitude development over time."""
+    source = np.asarray(frag, dtype=np.float32)
+    if len(source) < 512:
+        return source
+    drive = composition_feedback_audio_snapshot()["development_drive"]
+    request = max(0.0, drive - 1.0)
+    if request <= 1e-6:
+        return source
+
+    progress = np.linspace(0.0, 1.0, len(source), dtype=np.float32)
+    cycles = {1: 1.15, 3: 1.65, 5: 2.25}[dream_level]
+    phase = {"resonance": 0.15, "texture": 0.55, "gesture": 1.10,
+             "noise": 1.65, "impact": 2.10}.get(role, 0.0)
+    motion = 0.5 + 0.5 * np.sin(2.0 * np.pi * cycles * progress + phase)
+    depth = min(0.22, 0.055 + request * 0.34)
+    amplitude_curve = (1.0 - depth) + depth * motion
+
+    cutoff = 1900 if role in {"texture", "resonance"} else 2700
+    low = butter_filter(source, "lowpass", cutoff)
+    detail = source - low
+    opening_shape = np.clip(np.sin(np.pi * progress), 0.0, 1.0)
+    opening = 0.62 + 0.58 * opening_shape ** 1.45
+    spectral_mix = min(0.44, 0.12 + request * 0.72)
+    evolved = source * (1.0 - spectral_mix) + (low + detail * opening) * spectral_mix
+    evolved *= amplitude_curve
+    source_rms = float(np.sqrt(np.mean(source * source))) + 1e-9
+    evolved_rms = float(np.sqrt(np.mean(evolved * evolved))) + 1e-9
+    evolved *= min(1.12, source_rms / evolved_rms)
+    source_peak = float(np.max(np.abs(source))) + 1e-9
+    evolved_peak = float(np.max(np.abs(evolved))) + 1e-9
+    if evolved_peak > source_peak * 1.08:
+        evolved *= (source_peak * 1.08) / evolved_peak
+    return evolved.astype(np.float32)
+
+
+def composition_sustain_bloom(frag, role, dream_level):
+    """Carry sustained material toward the accepted whole-render duration.
+
+    The composition preference already learns a different mean phrase duration
+    for D1, D3 and D5.  This turns that learned value into a bounded overlap-add
+    continuation for texture/resonance layers.  Short foreground gestures keep
+    their identity and are never stretched into drones.
+    """
+    source = np.asarray(frag, dtype=np.float32)
+    if role not in {"texture", "resonance"} or len(source) < 512:
+        return source
+    target_method = getattr(
+        COMPOSITION_PREFERENCE, "target_average_event_duration", None
+    )
+    target = target_method(dream_level) if callable(target_method) else None
+    if target is None or target <= 0.0:
+        return source
+
+    # D3/D5 add musical delay and every level adds learned release tails after
+    # this stage. Compensate for that post-processing so the final, reported
+    # duration approaches the learned target instead of overshooting it.
+    post_processing_compensation = {1: 0.90, 3: 0.80, 5: 0.86}[dream_level]
+    role_scale = (1.18 if role == "resonance" else 0.90) * post_processing_compensation
+    target_samples = int(float(target) * role_scale * TARGET_SR)
+    if len(source) >= int(target_samples * 0.82):
+        return source
+
+    # Avoid an abrupt pasted loop: neighbouring copies overlap under a
+    # sine-shaped window and scan a slightly shifted part of the developed
+    # phrase.  The upper bound prevents one tiny object from becoming the
+    # entire composition by itself.
+    target_samples = min(target_samples, max(len(source) * 4, len(source) + TARGET_SR))
+    overlap = min(len(source) // 3, max(64, int(0.85 * TARGET_SR)))
+    hop = max(64, len(source) - overlap)
+    output = np.zeros(target_samples, dtype=np.float32)
+    weights = np.zeros(target_samples, dtype=np.float32)
+    window = np.ones(len(source), dtype=np.float32)
+    if overlap > 1:
+        ramp = np.sin(np.linspace(0.0, np.pi / 2.0, overlap, dtype=np.float32)) ** 2
+        window[:overlap] = ramp
+        window[-overlap:] = ramp[::-1]
+
+    copy_index = 0
+    for start in range(0, target_samples, hop):
+        phrase = source
+        if copy_index:
+            shift = int(len(source) * 0.037 * copy_index) % len(source)
+            phrase = crossfaded_circular_shift(source, shift)
+            if copy_index % 3 == 2:
+                phrase = reverse_blend(phrase, amount=0.08)
+        end = min(target_samples, start + len(source))
+        size = end - start
+        output[start:end] += phrase[:size] * window[:size]
+        weights[start:end] += window[:size]
+        copy_index += 1
+        if end >= target_samples:
+            break
+    active = weights > 1e-6
+    output[active] /= weights[active]
+    output[~active] = 0.0
+    source_peak = float(np.max(np.abs(source))) + 1e-9
+    output_peak = float(np.max(np.abs(output))) + 1e-9
+    if output_peak > source_peak:
+        output *= source_peak / output_peak
+    return output.astype(np.float32)
 
 
 def transform_fragment_for_role(frag, role, dream_level):
@@ -2393,6 +2783,8 @@ def transform_fragment_for_role(frag, role, dream_level):
         amp = random.uniform(0.075, 0.150) if dream_level == 5 else random.uniform(0.070, 0.145)
 
     frag = structured_granulation(frag, role, dream_level)
+    frag = composition_sustain_bloom(frag, role, dream_level)
+    frag = learned_material_evolution(frag, role, dream_level)
     amp *= (1 + dream_level * 0.055)
     if role == "gesture":
         amp *= learned_factor("gesture_weight", 4.0)
@@ -2687,6 +3079,7 @@ def generate_soundscape(dream_level):
     role_last_end = {role: None for role in role_counts}
 
     section_item_counts = planned_form_items(form, dream_level)
+    remaining_role_counts = planned_role_targets(sum(section_item_counts), dream_level)
 
     for (section_name, section_start, section_end, _density), items in zip(
         form, section_item_counts
@@ -2694,7 +3087,11 @@ def generate_soundscape(dream_level):
         section_length = section_end - section_start
 
         for i in range(items):
-            role = role_sequence_for_section(section_name, dream_level)
+            role = role_sequence_for_section(
+                section_name,
+                dream_level,
+                remaining_role_counts=remaining_role_counts,
+            )
 
             # Keep one palette across the form. Sections differ through role,
             # transformation and density rather than unrelated new families.
@@ -2711,12 +3108,33 @@ def generate_soundscape(dream_level):
             )
             _, unique_object_limit = material_plan_limits(dream_level)
             palette_is_full = len(used) >= unique_object_limit
-            use_motif = bool(same_role_motifs) and (
-                palette_is_full or random.random() < repeat_chance
+            palette_hard_max = max(
+                unique_object_limit,
+                int(round(unique_object_limit * 1.12)),
             )
+            # Reaching the motif target used to force every later event back
+            # into the small early motif bank. That made one recording occupy
+            # half of D1/D5 even though the material plan contained many valid
+            # sources. Keep recurrence audible, but continue discovering
+            # related embedded objects throughout the complete form.
+            motif_probability = repeat_chance
+            if palette_is_full:
+                motif_probability = max(
+                    motif_probability,
+                    {1: 0.62, 3: 0.52, 5: 0.42}[dream_level],
+                )
+            use_motif = bool(same_role_motifs) and random.random() < motif_probability
+            if len(used) >= palette_hard_max and same_role_motifs:
+                use_motif = True
 
             if use_motif:
-                obj = random.choice(same_role_motifs)
+                motif_candidates = diversify_overused_recordings(
+                    same_role_motifs,
+                    usage_counts,
+                    dream_level,
+                    len(CURRENT_MATERIAL_PLAN or ()),
+                )
+                obj = random.choice(motif_candidates)
                 key = (obj["recording_id"], obj["object_id"])
             else:
                 obj = choose_weighted(objects, profile, dream_level, previous, desired_role=role, preferred_groups=preferred_groups, usage_counts=usage_counts, sample_profile=sample_profile)
@@ -2727,7 +3145,7 @@ def generate_soundscape(dream_level):
                     key = (obj["recording_id"], obj["object_id"])
                     tries += 1
                 used.add(key)
-                motif_limit = {1: 6, 3: 10, 5: 14}[dream_level]
+                motif_limit = palette_hard_max
                 if len(motif_bank) < motif_limit and role in ["gesture", "texture", "resonance"]:
                     motif_obj = dict(obj)
                     motif_obj["role"] = role

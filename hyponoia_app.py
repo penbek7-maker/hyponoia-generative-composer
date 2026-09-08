@@ -140,6 +140,7 @@ class HyponoiaApp:
         preference = info["composition_preference"]
         self.status.set(
             f"Library: {info['recordings']} recordings / {info['sound_objects']} objects  •  "
+            f"Source WAVs: {'ON' if info['source_audio_ready'] else 'MISSING'} ({info['source_wav_count']})  •  "
             f"Deep embeddings: {'ON' if deep['active'] else 'OFF'} ({deep['embedding_count']})  •  "
             f"Gold preference: {'ON' if preference['active'] else 'OFF'}"
         )
@@ -191,7 +192,7 @@ class HyponoiaApp:
         if not info["ready_to_generate"]:
             messagebox.showinfo(
                 "Hyponoia is not ready",
-                "Update the sound library first and check that both learning models show ON.",
+                "Choose and update the sound library first, then check that Source WAVs and both learning models show ON.",
             )
             return
         level = int(self.level.get()[1:])

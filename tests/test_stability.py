@@ -165,6 +165,26 @@ def test_greek_explicit_global_scope_routes_to_all_levels_without_bilingual_inte
     assert interpretation["status"] == "interpreted"
 
 
+def test_short_natural_global_scope_routes_to_all_levels():
+    interpretation = parse_feedback_comment("Σε όλα: περισσότερο granulation", 3)
+    assert interpretation["scope"] == "global"
+    assert interpretation["target_levels"] == ["D1", "D3", "D5"]
+
+
+def test_natural_greek_more_intense_requests_activity():
+    interpretation = parse_feedback_comment("Το θέλω ακόμη πιο έντονο", 5)
+    assert "increase_activity" in {
+        action["intent"] for action in interpretation["actions"]
+    }
+
+
+def test_natural_greek_fuller_requests_richness():
+    interpretation = parse_feedback_comment("Το D5 να είναι πιο γεμάτο", 5)
+    assert "increase_richness" in {
+        action["intent"] for action in interpretation["actions"]
+    }
+
+
 def test_level_mentioned_as_comparison_does_not_override_selected_level():
     interpretation = parse_feedback_comment(
         "Ήταν καλό για D1, αλλά είχε πολύ χαμηλή ενέργεια",

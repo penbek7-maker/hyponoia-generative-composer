@@ -291,15 +291,31 @@ class CompositionPreferenceAssist:
             embedding_path = Path(payload["embeddings_path"]).expanduser()
             if not embedding_path.is_absolute():
                 embedding_path = source.parent / embedding_path
+            evidence_unique_objects = {
+                int(item["dream_level"]): int(item.get("covered_objects", 0))
+                for item in payload.get("positive_evidence", [])
+                if item.get("dream_level") in (1, 3, 5)
+            }
+            positive_structure = dict(payload.get("positive_structure", {}))
+            if evidence_unique_objects:
+                positive_structure.setdefault(
+                    "unique_objects",
+                    float(np.mean(list(evidence_unique_objects.values()))),
+                )
             level_heads = {}
             for level, head in dict(payload.get("level_heads", {})).items():
                 parsed_level = int(level)
                 if parsed_level not in (1, 3, 5):
                     continue
+                positive_structure = dict(head.get("positive_structure", {}))
+                if evidence_unique_objects.get(parsed_level, 0) > 0:
+                    positive_structure.setdefault(
+                        "unique_objects", evidence_unique_objects[parsed_level]
+                    )
                 level_heads[parsed_level] = {
                     "positive": _unit(np.asarray(head["positive_prototype"], dtype=np.float64)),
                     "negative": _unit(np.asarray(head["negative_prototype"], dtype=np.float64)),
-                    "positive_structure": dict(head.get("positive_structure", {})),
+                    "positive_structure": positive_structure,
                     "reference_recordings": set(map(str, head.get("reference_recordings", []))),
                 }
             return cls(
@@ -310,7 +326,7 @@ class CompositionPreferenceAssist:
                 negative=_unit(np.asarray(payload["negative_prototype"], dtype=np.float64)),
                 reference_recordings=set(map(str, payload.get("reference_recordings", []))),
                 reference_reuse_penalty=float(payload.get("reference_reuse_penalty", 1.08)),
-                positive_structure=dict(payload.get("positive_structure", {})),
+                positive_structure=positive_structure,
                 positive_dream_levels={
                     int(item["dream_level"])
                     for item in payload.get("positive_evidence", [])
@@ -371,21 +387,64 @@ class CompositionPreferenceAssist:
 
     def target_event_count(self, dream_level: int, duration_sec: float) -> int | None:
         """Transfer the positive render's economy while preserving level depth."""
-        level_head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
-        structure = level_head["positive_structure"] if level_head else self.positive_structure
+        structure = self.structure_for_level(dream_level)
         if not self.active or not structure:
             return None
         rate = float(structure.get("event_rate_per_minute", 0.0))
         if rate <= 0.0:
             return None
-        depth = 1.0 if level_head else {1: 1.0, 3: 1.08, 5: 1.24}.get(int(dream_level), 1.0)
+        has_level_head = int(dream_level) in self.level_heads if dream_level in (1, 3, 5) else False
+        depth = 1.0 if has_level_head else {1: 1.0, 3: 1.08, 5: 1.24}.get(int(dream_level), 1.0)
         target = rate * max(0.0, float(duration_sec)) / 60.0 * depth
         return max(1, int(round(target)))
+
+    def structure_for_level(self, dream_level: int) -> dict[str, Any]:
+        """Return the accepted whole-render structure for one dream level."""
+        level_head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
+        return level_head["positive_structure"] if level_head else self.positive_structure
+
+    def target_average_event_duration(self, dream_level: int) -> float | None:
+        """Learned phrase/layer duration from the accepted complete render."""
+        structure = self.structure_for_level(dream_level)
+        if not self.active or not structure:
+            return None
+        target = float(structure.get("average_event_duration_sec", 0.0))
+        return target if target > 0.0 else None
+
+    def target_unique_recordings(self, dream_level: int) -> int | None:
+        """Minimum per-render source breadth learned from the accepted render."""
+        structure = self.structure_for_level(dream_level)
+        if not self.active or not structure:
+            return None
+        target = int(round(float(structure.get("unique_recordings", 0.0))))
+        return target if target > 0 else None
+
+    def target_unique_objects(self, dream_level: int) -> int | None:
+        """Material-object breadth observed in the accepted complete render."""
+        structure = self.structure_for_level(dream_level)
+        if not self.active or not structure:
+            return None
+        target = int(round(float(structure.get("unique_objects", 0.0))))
+        return target if target > 0 else None
+
+    def target_role_distribution(self, dream_level: int) -> dict[str, float]:
+        """Accepted balance of texture, resonance and foreground functions."""
+        structure = self.structure_for_level(dream_level)
+        if not self.active or not structure:
+            return {}
+        distribution = {
+            str(role): max(0.0, float(share))
+            for role, share in dict(structure.get("role_distribution", {})).items()
+        }
+        total = sum(distribution.values())
+        if total <= 0.0:
+            return {}
+        return {role: share / total for role, share in distribution.items()}
 
     def role_factor(self, role: str, dream_level: int) -> float:
         """Softly transfer the positive render's role balance, not its samples."""
         level_head = self.level_heads.get(int(dream_level)) if dream_level in (1, 3, 5) else None
-        structure = level_head["positive_structure"] if level_head else self.positive_structure
+        structure = self.structure_for_level(dream_level)
         if not self.active or not structure:
             return 1.0
         distribution = dict(structure.get("role_distribution", {}))
@@ -408,6 +467,12 @@ class CompositionPreferenceAssist:
             "structure_active": bool(self.positive_structure),
             "positive_event_rate_per_minute": self.positive_structure.get(
                 "event_rate_per_minute"
+            ),
+            "positive_average_event_duration_sec": self.positive_structure.get(
+                "average_event_duration_sec"
+            ),
+            "positive_unique_recordings": self.positive_structure.get(
+                "unique_recordings"
             ),
             "material_anchor_levels": sorted(self.positive_dream_levels),
             "level_specific_heads": sorted(self.level_heads),

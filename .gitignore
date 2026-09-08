@@ -39,6 +39,7 @@ phase2_artifacts/*
 !phase2_artifacts/encoder_v1.pt
 !phase2_artifacts/metric_adapter_v2.pt
 !phase2_artifacts/composition_preference_gold.json
+!phase2_artifacts/learning_profile_seed.json
 local_models/
 
 # Old development files and backups

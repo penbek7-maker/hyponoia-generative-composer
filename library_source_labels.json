@@ -1,6 +1,6 @@
 {
   "schema_version": "library_source_labels_v1",
-  "description": "Optional user-correctable source origin labels. Labels describe origin, not artistic value.",
+  "description": "User-correctable source origin labels. Labels describe origin, not artistic value.",
   "allowed_labels": [
     "natural",
     "synthetic",
@@ -8,5 +8,23 @@
     "instrument_hybrid",
     "unknown"
   ],
-  "recordings": {}
+  "recordings": {
+    "sample1.wav": "synthetic",
+    "sample6.wav": "synthetic",
+    "sample8.wav": "hybrid",
+    "sample10.wav": "synthetic",
+    "sample25.wav": "instrument_hybrid",
+    "sample34.wav": "natural",
+    "sample36.wav": "instrument_hybrid",
+    "sample47.wav": "instrument_hybrid",
+    "sample48.wav": "hybrid",
+    "sample55.wav": "synthetic",
+    "sample62.wav": "instrument_hybrid",
+    "sample76.wav": "synthetic",
+    "sample87.wav": "synthetic",
+    "sample91.wav": "hybrid",
+    "sample93.wav": "natural",
+    "sample104.wav": "natural",
+    "sample105.wav": "natural"
+  }
 }
