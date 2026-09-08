@@ -94,11 +94,23 @@ def test_listener_ratings_build_bounded_level_specific_event():
         render_name="Hyponoia_DeepLearning_Assist_Smoke_D1",
     )
     assert event["accepted_as_aesthetic_baseline"] is False
+    assert event["baseline_decision"] == "no"
     assert event["ratings_0_to_100"]["musicality"] == 40
     assert event["requested_control_deltas"]["musicality_weight"] > 0
     assert event["requested_control_deltas"]["synthetic_material_weight"] > 0
     assert event["requested_control_deltas"]["low_frequency_control"] > 0
     assert event["requested_control_deltas"]["layer_clarity_weight"] > 0
+
+
+def test_unsure_baseline_decision_is_distinct_from_rejection():
+    event = build_composition_feedback(
+        RATINGS,
+        dream_level="D3",
+        keep_as_baseline=False,
+        baseline_decision="unsure",
+    )
+    assert event["accepted_as_aesthetic_baseline"] is False
+    assert event["baseline_decision"] == "unsure"
 
 
 def test_composition_feedback_updates_only_the_render_dream_level():

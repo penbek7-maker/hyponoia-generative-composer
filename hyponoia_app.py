@@ -17,8 +17,8 @@ class HyponoiaApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Hyponoia")
-        self.root.geometry("900x720")
-        self.root.minsize(760, 620)
+        self.root.geometry("1000x850")
+        self.root.minsize(820, 700)
         self.library_folder = tk.StringVar()
         self.level = tk.StringVar(value="D1")
         self.scale = tk.StringVar(value="free")
@@ -38,14 +38,14 @@ class HyponoiaApp:
         ).pack(anchor="w", pady=(2, 14))
         ttk.Label(frame, textvariable=self.status, wraplength=830, justify="left").pack(anchor="w")
 
-        notebook = ttk.Notebook(frame)
-        notebook.pack(fill="both", expand=True, pady=(16, 0))
-        library_tab = ttk.Frame(notebook, padding=18)
-        compose_tab = ttk.Frame(notebook, padding=18)
-        feedback_tab = ttk.Frame(notebook, padding=18)
-        notebook.add(library_tab, text="1. Library")
-        notebook.add(compose_tab, text="2. Generate & Listen")
-        notebook.add(feedback_tab, text="3. Feedback")
+        self.notebook = ttk.Notebook(frame)
+        self.notebook.pack(fill="both", expand=True, pady=(16, 0))
+        library_tab = ttk.Frame(self.notebook, padding=18)
+        compose_tab = ttk.Frame(self.notebook, padding=18)
+        feedback_tab = ttk.Frame(self.notebook)
+        self.notebook.add(library_tab, text="1. Library")
+        self.notebook.add(compose_tab, text="2. Generate & Listen")
+        self.notebook.add(feedback_tab, text="3. Teach Hyponoia")
         self._build_library(library_tab)
         self._build_composer(compose_tab)
         self._build_feedback(feedback_tab)
@@ -113,19 +113,12 @@ class HyponoiaApp:
         tab.columnconfigure(3, weight=1)
 
     def _build_feedback(self, tab: ttk.Frame) -> None:
-        ttk.Label(tab, text="Teach Hyponoia", font=("Helvetica", 18, "bold")).pack(anchor="w")
-        ttk.Label(
+        self.feedback_app = FeedbackApp(
             tab,
-            text=(
-                "Give a free Greek or English comment by text or voice. Hyponoia shows what it "
-                "understood before applying anything. The complete ratings panel is the next integration step."
-            ),
-            wraplength=780,
-            justify="left",
-        ).pack(anchor="w", pady=(6, 16))
-        ttk.Button(
-            tab, text="Open text & voice feedback", command=self.open_feedback
-        ).pack(anchor="w")
+            embedded=True,
+            level_var=self.level,
+            on_applied=self.feedback_applied,
+        )
 
     @staticmethod
     def _set_text(widget: tk.Text, text: str) -> None:
@@ -142,7 +135,8 @@ class HyponoiaApp:
             f"Library: {info['recordings']} recordings / {info['sound_objects']} objects  •  "
             f"Source WAVs: {'ON' if info['source_audio_ready'] else 'MISSING'} ({info['source_wav_count']})  •  "
             f"Deep embeddings: {'ON' if deep['active'] else 'OFF'} ({deep['embedding_count']})  •  "
-            f"Gold preference: {'ON' if preference['active'] else 'OFF'}"
+            f"Preference learning: {'ON' if preference['active'] else 'OFF'} "
+            f"({info['preference_review_count']} personal reviews)"
         )
 
     def choose_library(self) -> None:
@@ -243,6 +237,14 @@ class HyponoiaApp:
     def open_feedback(self) -> None:
         child = tk.Toplevel(self.root)
         FeedbackApp(child)
+
+    def feedback_applied(self, _event: dict, learning: dict) -> None:
+        self.refresh_status()
+        if learning.get("updated"):
+            messagebox.showinfo(
+                "Hyponoia learned",
+                "The ratings and comment were saved. The whole-composition preference model was updated safely.",
+            )
 
 
 def main() -> None:

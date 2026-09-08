@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from composition_preference_v1 import CompositionPreferenceAssist
+from hyponoia_stability import atomic_write_json
 from representation_assist_v1 import RepresentationAssist
 
 
@@ -27,6 +29,18 @@ def load_user_config(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return {}
+
+
+def update_user_config(project_dir: str | Path = PROJECT_DIR, **values: Any) -> dict[str, Any]:
+    """Persist portable user choices without touching shipped defaults."""
+    root = Path(project_dir).resolve()
+    config = load_user_config(root)
+    for key, value in values.items():
+        if isinstance(value, Path):
+            value = os.path.relpath(value.expanduser().resolve(), root)
+        config[str(key)] = value
+    atomic_write_json(root / "hyponoia_user_config.json", config)
+    return config
 
 
 def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
@@ -59,6 +73,14 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
 
     representation = RepresentationAssist.from_config(representation_path)
     preference = CompositionPreferenceAssist.from_file(preference_path)
+    preference_reviews = 0
+    try:
+        preference_payload = json.loads(preference_path.read_text(encoding="utf-8"))
+        preference_reviews = int(
+            preference_payload.get("online_learning", {}).get("review_count", 0)
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
     source_wav_count = (
         sum(1 for path in memory_folder.rglob("*") if path.is_file() and path.suffix.lower() == ".wav")
         if memory_folder.is_dir()
@@ -78,6 +100,7 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
         "sound_objects": sound_objects,
         "representation": representation.snapshot(),
         "composition_preference": preference.snapshot(),
+        "preference_review_count": preference_reviews,
         "current_audio": str(current_audio),
         "current_audio_ready": current_audio.exists(),
         "ready_to_generate": (

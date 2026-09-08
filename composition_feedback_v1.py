@@ -139,6 +139,7 @@ def build_composition_feedback(
     *,
     dream_level: Any,
     keep_as_baseline: bool,
+    baseline_decision: str | None = None,
     more: str = "",
     less: str = "",
     comment: str = "",
@@ -155,6 +156,11 @@ def build_composition_feedback(
     combined_text = ". ".join(part.strip() for part in (more, less, comment) if part.strip())
     if source not in {"text", "voice"}:
         raise ValueError("source must be text or voice")
+    decision = str(
+        baseline_decision if baseline_decision is not None else ("yes" if keep_as_baseline else "no")
+    ).strip().lower()
+    if decision not in {"yes", "no", "unsure"}:
+        raise ValueError("baseline_decision must be yes, no or unsure")
     if interpreter not in {"rules", "local_llm", "auto"}:
         raise ValueError("interpreter must be rules, local_llm or auto")
     fallback_reason = None
@@ -185,7 +191,8 @@ def build_composition_feedback(
         "timestamp": utc_timestamp(),
         "render_name": render_name,
         "dream_level": level,
-        "accepted_as_aesthetic_baseline": bool(keep_as_baseline),
+        "accepted_as_aesthetic_baseline": decision == "yes",
+        "baseline_decision": decision,
         "ratings_1_to_5": validated,
         "ratings_0_to_100": {key: round(value * 20.0, 3) for key, value in validated.items()},
         "listener_text": {"more": more, "less": less, "comment": comment},

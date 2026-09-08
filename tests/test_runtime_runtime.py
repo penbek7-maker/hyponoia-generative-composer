@@ -4,7 +4,13 @@ import sys
 import pytest
 
 from composition_preference_v1 import CompositionPreferenceAssist
-from hyponoia_runtime import PROJECT_DIR, generator_command, runtime_status
+from hyponoia_runtime import (
+    PROJECT_DIR,
+    generator_command,
+    load_user_config,
+    runtime_status,
+    update_user_config,
+)
 from representation_assist_v1 import RepresentationAssist
 
 
@@ -63,3 +69,12 @@ def test_generator_command_is_safe_and_uses_current_python(tmp_path):
     ]
     with pytest.raises(ValueError):
         generator_command(2, project_dir=tmp_path)
+
+
+def test_user_config_update_keeps_paths_portable(tmp_path):
+    model = tmp_path / "composition_preference_v1.json"
+    update_user_config(tmp_path, composition_preference=model, ui_language="el")
+    assert load_user_config(tmp_path) == {
+        "composition_preference": "composition_preference_v1.json",
+        "ui_language": "el",
+    }
