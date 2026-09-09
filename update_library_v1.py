@@ -44,6 +44,14 @@ def _load_previous_index(path: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _load_user_config(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def _analyse_recording(root: Path, relative_path: str) -> dict[str, Any]:
     audio_path = root / relative_path
     audio, sr = load_audio(audio_path)
@@ -243,19 +251,19 @@ def update_library(
     atomic_write_json(manifest_path, proposed_manifest)
     if embeddings_path is not None and embeddings_payload is not None and embeddings_changed:
         atomic_write_json(embeddings_path, embeddings_payload)
-    atomic_write_json(
-        user_config_path,
-        {
-            "schema_version": 1,
-            "updated_at": utc_timestamp(),
-            "memory_folder": str(library_root),
-            "memory_file": str(index_path),
-            "representation_config": str(project_root / "representation_config.json"),
-            "composition_preference": str(
-                project_root / "phase2_artifacts" / "composition_preference_gold.json"
-            ),
-        },
+    user_config = _load_user_config(user_config_path)
+    user_config.update({
+        "schema_version": 1,
+        "updated_at": utc_timestamp(),
+        "memory_folder": str(library_root),
+        "memory_file": "memory_index_v3.json",
+        "representation_config": "representation_config.json",
+    })
+    user_config.setdefault(
+        "composition_preference",
+        "phase2_artifacts/composition_preference_gold.json",
     )
+    atomic_write_json(user_config_path, user_config)
     result.update(
         {
             "status": "updated",

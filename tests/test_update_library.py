@@ -46,8 +46,26 @@ def test_update_builds_memory_config_and_never_changes_source_audio(tmp_path, mo
     assert memory[0]["recording"] == "tone.wav"
     config = json.loads((project / "hyponoia_user_config.json").read_text())
     assert config["memory_folder"] == str(library.resolve())
-    assert config["memory_file"] == str((project / "memory_index_v3.json").resolve())
+    assert config["memory_file"] == "memory_index_v3.json"
     assert result["embedding_refresh"]["status"] == "disabled"
+
+
+def test_library_update_preserves_personal_preference_model(tmp_path, monkeypatch):
+    library = tmp_path / "library"
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(library / "tone.wav", b"source")
+    (project / "hyponoia_user_config.json").write_text(json.dumps({
+        "composition_preference": "composition_preference_v1.json",
+        "ui_language": "el",
+    }))
+    monkeypatch.setattr(updater, "_analyse_recording", _fake_record)
+
+    updater.update_library(library, project)
+
+    config = json.loads((project / "hyponoia_user_config.json").read_text())
+    assert config["composition_preference"] == "composition_preference_v1.json"
+    assert config["ui_language"] == "el"
 
 
 def test_unchanged_and_renamed_wav_reuse_previous_analysis(tmp_path, monkeypatch):

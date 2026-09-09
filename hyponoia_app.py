@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from hyponoia_feedback_app import FeedbackApp
 from hyponoia_runtime import PROJECT_DIR, generator_command, runtime_status
+from max_live_v1 import MaxLiveController
 from update_library_v1 import update_library
 
 
@@ -25,7 +26,10 @@ class HyponoiaApp:
         self.root_pitch = tk.IntVar(value=0)
         self.confidence = tk.DoubleVar(value=0.0)
         self.status = tk.StringVar(value="Checking Hyponoia…")
+        self.max_status = tk.StringVar(value="Live connection is stopped.")
+        self.max_controller = MaxLiveController(PROJECT_DIR)
         self._build()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh_status()
 
     def _build(self) -> None:
@@ -43,12 +47,15 @@ class HyponoiaApp:
         library_tab = ttk.Frame(self.notebook, padding=18)
         compose_tab = ttk.Frame(self.notebook, padding=18)
         feedback_tab = ttk.Frame(self.notebook)
+        live_tab = ttk.Frame(self.notebook, padding=18)
         self.notebook.add(library_tab, text="1. Library")
         self.notebook.add(compose_tab, text="2. Generate & Listen")
         self.notebook.add(feedback_tab, text="3. Teach Hyponoia")
+        self.notebook.add(live_tab, text="4. Live / Max")
         self._build_library(library_tab)
         self._build_composer(compose_tab)
         self._build_feedback(feedback_tab)
+        self._build_live(live_tab)
 
     def _build_library(self, tab: ttk.Frame) -> None:
         ttk.Label(
@@ -120,6 +127,43 @@ class HyponoiaApp:
             on_applied=self.feedback_applied,
         )
 
+    def _build_live(self, tab: ttk.Frame) -> None:
+        ttk.Label(tab, text="Live Performance / Max", font=("Helvetica", 20, "bold")).pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "Optional. Start this only when you want Max/MSP to request new D1, D3 or D5 renders. "
+                "Normal Hyponoia composition works without Max."
+            ),
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 18))
+        status_box = ttk.LabelFrame(tab, text="Connection status", padding=14)
+        status_box.pack(fill="x")
+        ttk.Label(status_box, textvariable=self.max_status, wraplength=760, justify="left").pack(anchor="w")
+        ttk.Label(
+            status_box,
+            text="Max sends to 127.0.0.1:7401  •  Hyponoia replies to 127.0.0.1:7402",
+        ).pack(anchor="w", pady=(8, 0))
+        buttons = ttk.Frame(tab)
+        buttons.pack(fill="x", pady=18)
+        self.start_max_button = ttk.Button(buttons, text="Start live connection", command=self.start_max)
+        self.start_max_button.pack(side="left")
+        self.stop_max_button = ttk.Button(buttons, text="Stop", command=self.stop_max)
+        self.stop_max_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Send test to Max", command=self.test_max).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Open connection log", command=self.open_max_log).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            tab,
+            text=(
+                "In Max, send /generator/render D1, D3 or D5. Hyponoia returns the complete WAV path "
+                "before /generator/ready, so Max can preload it safely."
+            ),
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+        self.refresh_max_status()
+
     @staticmethod
     def _set_text(widget: tk.Text, text: str) -> None:
         widget.configure(state="normal")
@@ -138,6 +182,37 @@ class HyponoiaApp:
             f"Preference learning: {'ON' if preference['active'] else 'OFF'} "
             f"({info['preference_review_count']} personal reviews)"
         )
+
+    def refresh_max_status(self) -> None:
+        info = self.max_controller.snapshot()
+        self.max_status.set(info["message"])
+        self.start_max_button.configure(state="disabled" if info["receiver_active"] else "normal")
+        self.stop_max_button.configure(state="normal" if info["owned_by_app"] else "disabled")
+
+    def start_max(self) -> None:
+        try:
+            info = self.max_controller.start()
+        except OSError as exc:
+            messagebox.showerror("Live connection did not start", str(exc))
+            return
+        self.max_status.set(info["message"])
+        self.refresh_max_status()
+
+    def stop_max(self) -> None:
+        self.max_controller.stop()
+        self.refresh_max_status()
+
+    def test_max(self) -> None:
+        result = self.max_controller.send_test()
+        self.max_status.set(
+            f"Test sent to Max at {result['destination']}. Check the Max console for /hyponoia/test 1."
+        )
+
+    def open_max_log(self) -> None:
+        path = PROJECT_DIR / "logs" / "max_live.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        subprocess.Popen(["open", str(path)])
 
     def choose_library(self) -> None:
         selected = filedialog.askdirectory(title="Choose your Hyponoia WAV folder")
@@ -245,6 +320,12 @@ class HyponoiaApp:
                 "Hyponoia learned",
                 "The ratings and comment were saved. The whole-composition preference model was updated safely.",
             )
+
+    def close(self) -> None:
+        self.max_controller.stop()
+        if hasattr(self, "feedback_app") and self.feedback_app.voice_recorder is not None:
+            self.feedback_app.voice_recorder.cancel()
+        self.root.destroy()
 
 
 def main() -> None:
