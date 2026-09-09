@@ -181,3 +181,35 @@ def test_rules_fallback_understands_empty_texture_and_developing_loops():
     intents = {action["intent"] for action in preview["actions"]}
     assert "increase_richness" in intents
     assert "increase_material_development" in intents
+
+
+def test_rules_fallback_understands_more_continuity_loops_and_arpeggios():
+    preview = build_feedback_preview(
+        "Είναι αρκετά καλό και θα ήθελα μόνο περισσότερη μουσικότητα αν γίνεται "
+        "και πιο πολύ συνέχεια, λίγες λούπες και πιο πολλά arpegios.",
+        dream_level="D1",
+        interpreter="rules",
+    )
+    intents = {action["intent"] for action in preview["actions"]}
+    assert {
+        "increase_musicality",
+        "increase_coherence",
+        "increase_looping",
+        "increase_arpeggios",
+    } <= intents
+    assert preview["interpretation"]["combined_control_deltas"]["repetition_control"] < 0
+
+
+def test_rules_fallback_understands_coordinated_more_repetitions_and_loops():
+    preview = build_feedback_preview(
+        "Θα ήθελα περισσότερη μουσικότητα, περισσότερες επαναλήψεις και λούπες "
+        "και να το κάνουμε ακόμη πιο συνεκτικό.",
+        dream_level="D1",
+        interpreter="rules",
+    )
+    intents = {action["intent"] for action in preview["actions"]}
+    assert {
+        "increase_musicality",
+        "increase_coherence",
+        "increase_looping",
+    } <= intents

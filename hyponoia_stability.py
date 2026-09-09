@@ -102,6 +102,14 @@ _INTENT_RULES = (
         "updates": {"musicality_weight": 0.06},
     },
     {
+        "intent": "increase_coherence",
+        "patterns": (
+            r"\bmore (?:continuity|coherence|connection)s?\b",
+            r"\bstronger connections?\b",
+        ),
+        "updates": {"coherence_weight": 0.07},
+    },
+    {
         "intent": "increase_rhythmicity",
         "patterns": (
             r"\bmore rhythm(?:ic|ical|icity)?\b",
@@ -209,6 +217,16 @@ _INTENT_RULES = (
         "updates": {"repetition_control": 0.10, "exploration_weight": 0.06},
     },
     {
+        "intent": "increase_looping",
+        "patterns": (
+            r"\bmore (?:musical )?loops?\b",
+            r"\badd (?:a few|some|more) (?:musical )?loops?\b",
+            r"\b(?:a few|some) (?:musical )?loops?\b",
+        ),
+        "updates": {"repetition_control": -0.08},
+        "implementation_note": "Adds bounded motif recurrence without forcing one sound to dominate the palette.",
+    },
+    {
         "intent": "increase_smoothness",
         "patterns": (r"\bsmoother\b", r"\bmore smooth(?:ness| transitions?)?\b", r"\bless abrupt\b"),
         "updates": {"transition_smoothness_weight": 0.08},
@@ -263,6 +281,15 @@ _UNICODE_INTENT_RULES = (
             r"\bαυξησ(?:ε|η)\s+(?:τη\s+)?μουσικοτητα\b",
         ),
         "updates": {"musicality_weight": 0.06},
+    },
+    {
+        "intent": "increase_coherence",
+        "patterns": (
+            r"\b(?:περισσοτερ[ηο]|πιο\s+πολυ)\s+συνεχεια\b",
+            r"\bπερισσοτερ(?:η|ες)\s+(?:συνοχη|συνδεσεις)\b",
+            r"\bπιο\s+(?:συνεκτικ(?:ο|η|α)|δεμεν(?:ο|η|α))\b",
+        ),
+        "updates": {"coherence_weight": 0.07},
     },
     {
         "intent": "increase_bloom",
@@ -322,6 +349,7 @@ _UNICODE_INTENT_RULES = (
         "intent": "increase_arpeggios",
         "patterns": (
             r"\bπερισσοτερ(?:α|ο)\s+(?:arpegg?i?os?|arps?|αρπισμ\w*)\b",
+            r"\bπιο\s+πολλ(?:α|ους)\s+(?:arpegg?i?os?|arps?|αρπισμ\w*)\b",
             r"\bπροσθεσ(?:ε|τε)\s+(?:arpegg?i?os?|αρπισμ\w*)\b",
             r"\bπερισσοτερ\w*\b(?:(?!\bλιγοτερ\w*\b)[^.]){0,80}\b(?:arpegg?i?os?|arps?|αρπισμ\w*)\b",
         ),
@@ -361,6 +389,18 @@ _UNICODE_INTENT_RULES = (
             r"\bνα μην επαναλαμβανεται\b",
         ),
         "updates": {"repetition_control": 0.10, "exploration_weight": 0.06},
+    },
+    {
+        "intent": "increase_looping",
+        "patterns": (
+            r"\bπερισσοτερες\s+(?:μουσικες\s+)?λουπ(?:ες)?\b",
+            r"\bπερισσοτερες\s+(?:μουσικες\s+)?επαναληψεις(?:\s+και\s+(?:μουσικες\s+)?λουπ(?:ες)?)?\b",
+            r"\bπιο\s+πολλες\s+(?:μουσικες\s+)?λουπ(?:ες)?\b",
+            r"\b(?:λιγες|μερικες)\s+(?:μουσικες\s+)?λουπ(?:ες)?\b",
+            r"\b(?:βαλε|προσθεσε)\s+(?:λιγες|μερικες|περισσοτερες)\s+(?:μουσικες\s+)?λουπ(?:ες)?\b",
+        ),
+        "updates": {"repetition_control": -0.08},
+        "implementation_note": "Προσθέτει ελεγχόμενη επιστροφή μουσικών μοτίβων χωρίς να εγκλωβίζει την παλέτα στον ίδιο ήχο.",
     },
     {
         "intent": "increase_smoothness",

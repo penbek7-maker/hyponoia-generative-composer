@@ -14,10 +14,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from hyponoia_stability import feedback_target_scope
+from local_language_model_v1 import DEFAULT_MODEL
 
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-DEFAULT_MODEL = "qwen3:4b"
 MIN_CONFIDENCE = 0.55
 
 INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
@@ -43,6 +43,7 @@ INTENT_CONTROL_DELTAS: dict[str, dict[str, float]] = {
         "exploration_weight": 0.06,
         "repetition_control": 0.03,
     },
+    "increase_looping": {"repetition_control": -0.08},
     "decrease_repetition": {
         "repetition_control": 0.10,
         "exploration_weight": 0.06,
@@ -70,14 +71,18 @@ OUTPUT_SCHEMA = {
     "additionalProperties": False,
     "required": ["summary_el", "intents", "confidence", "ambiguities"],
     "properties": {
-        "summary_el": {"type": "string"},
+        "summary_el": {"type": "string", "maxLength": 180},
         "intents": {
             "type": "array",
             "uniqueItems": True,
             "items": {"type": "string", "enum": list(ALLOWED_INTENTS)},
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "ambiguities": {"type": "array", "items": {"type": "string"}},
+        "ambiguities": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {"type": "string", "maxLength": 120},
+        },
     },
 }
 
@@ -99,6 +104,7 @@ Intent meanings:
 - diversify_long_layers: avoid reusing the same long drones/layers
 - increase_library_exploration: use more/different library sounds
 - increase_palette_variety: a more varied/plural sound palette
+- increase_looping: more deliberate musical loops or motif recurrence
 - decrease_repetition: fewer repeated sounds or ideas
 - increase_smoothness: smoother transitions, entrances or exits
 - increase_richness: less empty/thin, richer texture or more layers
@@ -118,6 +124,14 @@ Important distinctions:
   reduced low-frequency masking.
 - Do not invent an intent. Put uncertainty into ambiguities and lower confidence.
 - Return no intents for pure praise or comments unrelated to sound.
+- Understand paraphrases and metaphors from the whole sentence. Do not require
+  the listener to use an intent's technical words.
+- Sparse, naked, thin, "γυμνό", or unable to bloom asks for increase_richness
+  and/or increase_material_development; it never means decrease_repetition.
+- Ideas returning, being remembered, "να ξαναγυρίζουν ιδέες", or recurring
+  motifs asks for increase_looping; it never means decrease_repetition.
+- Disconnected sounds ask for increase_coherence. Startling or abrupt exits ask
+  for increase_smoothness. Do not infer repetition from either complaint.
 
 Examples:
 - "Αυτό είναι βασικά λίγο άδειο" -> increase_richness,
@@ -133,15 +147,29 @@ Examples:
   increase_instrument_material, bring_musical_material_forward.
 - "Δεν χρειάζεται arpeggio εδώ" -> decrease_arpeggios.
 - "Θέλω περισσότερες συνδέσεις μεταξύ των ήχων" -> increase_coherence.
+- "Θέλω λίγες λούπες και πιο πολλά arpeggios" -> increase_looping,
+  increase_arpeggios. Here "λίγες λούπες" asks to add some loops; it does NOT
+  mean fewer loops.
+- "Είναι κάπως γυμνό και δεν ανθίζει" -> increase_richness,
+  increase_material_development.
+- "Θέλω να ξαναγυρίζουν κάποιες ιδέες ώστε να νιώθω ότι θυμάται" ->
+  increase_looping.
+- "The sounds feel disconnected and the exits make me jump" ->
+  increase_coherence, increase_smoothness.
+- "Οι ήχοι μπαίνουν και βγαίνουν σαν διακόπτες" -> increase_smoothness.
 - "Δεν οδηγεί κάπου σαν συνολική σύνθεση" -> strengthen_overall_form.
 - "Θέλω περισσότερο οργανωμένο granulation" -> increase_structured_granulation.
 
 Allowed intent identifiers:
 {intents}
 
-Write summary_el and ambiguities concisely in the same language as the listener's
-comment (Greek for Greek input, English for English input). Return only
-schema-valid JSON.
+Write summary_el as natural listener-facing language, never as intent IDs, in
+at most 18 words. Include an ambiguity only when it changes which intent should
+be selected; do not merely repeat or define the comment. Write each ambiguity
+in at most 12 words, in
+the same language as the listener's comment (Greek for Greek input, English for
+English input). Return one complete schema-valid JSON object only. Do not add
+reasoning or Markdown.
 """.format(intents=", ".join(ALLOWED_INTENTS))
 
 
@@ -169,8 +197,10 @@ def _validate_model_result(raw: Any) -> dict[str, Any]:
     intents = raw.get("intents")
     if not isinstance(intents, list) or any(intent not in ALLOWED_INTENTS for intent in intents):
         raise LocalLLMUnavailable("Local language model returned an unsupported intent")
-    if len(intents) != len(set(intents)):
-        raise LocalLLMUnavailable("Local language model returned duplicate intents")
+    # Small local models sometimes repeat a valid label. Repetition is not an
+    # unsafe interpretation, so normalise it instead of discarding the whole
+    # contextual result and silently falling back to keyword rules.
+    intents = list(dict.fromkeys(intents))
     confidence = raw.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
         raise LocalLLMUnavailable("Local language model returned invalid confidence")
@@ -227,7 +257,7 @@ def interpret_with_local_llm(
         "stream": False,
         "think": False,
         "format": OUTPUT_SCHEMA,
-        "options": {"temperature": 0, "num_predict": 256},
+        "options": {"temperature": 0, "num_predict": 384, "repeat_penalty": 1.18},
     }
     response = request_json(ollama_url or DEFAULT_OLLAMA_URL, payload, timeout)
     try:

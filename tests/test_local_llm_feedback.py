@@ -10,7 +10,10 @@ def fake_response(result):
     def request_json(_url, payload, _timeout):
         assert payload["think"] is False
         assert payload["options"]["temperature"] == 0
+        assert payload["options"]["num_predict"] == 384
+        assert payload["options"]["repeat_penalty"] == 1.18
         assert payload["format"]["additionalProperties"] is False
+        assert payload["format"]["properties"]["summary_el"]["maxLength"] == 180
         return {"message": {"content": json.dumps(result, ensure_ascii=False)}}
 
     return request_json
@@ -82,6 +85,21 @@ def test_unknown_model_intent_is_rejected():
                 "ambiguities": [],
             }),
         )
+
+
+def test_duplicate_supported_intents_are_safely_deduplicated():
+    result = interpret_with_local_llm(
+        "Θέλω περισσότερες λούπες",
+        "D1",
+        request_json=fake_response({
+            "summary_el": "Ζητά περισσότερες μουσικές λούπες.",
+            "intents": ["increase_looping", "increase_looping"],
+            "confidence": 0.92,
+            "ambiguities": [],
+        }),
+    )
+    assert [action["intent"] for action in result["actions"]] == ["increase_looping"]
+    assert result["combined_control_deltas"] == {"repetition_control": -0.08}
 
 
 def test_auto_mode_falls_back_to_rules_only_on_technical_failure():

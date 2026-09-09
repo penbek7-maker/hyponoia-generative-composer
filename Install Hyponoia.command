@@ -32,7 +32,9 @@ if ".venv/bin/python" install_voice_model_v1.py >> "$LOG_FILE" 2>&1; then
   VOICE_MESSAGE="The local Greek/English voice model is ready."
 fi
 
+LANGUAGE_MESSAGE="In Teach Hyponoia, press ‘Enable context understanding’ once. Hyponoia will guide you through the private local-language setup."
+
 trap - ERR
-VOICE_MESSAGE="$VOICE_MESSAGE" /usr/bin/osascript <<'APPLESCRIPT'
-display dialog "Hyponoia is installed. " & (system attribute "VOICE_MESSAGE") & return & return & "Double-click Open Hyponoia.command to begin." buttons {"OK"} default button "OK"
+VOICE_MESSAGE="$VOICE_MESSAGE" LANGUAGE_MESSAGE="$LANGUAGE_MESSAGE" /usr/bin/osascript <<'APPLESCRIPT'
+display dialog "Hyponoia is installed. " & (system attribute "VOICE_MESSAGE") & return & return & (system attribute "LANGUAGE_MESSAGE") & return & return & "Double-click Open Hyponoia.command to begin." buttons {"OK"} default button "OK"
 APPLESCRIPT

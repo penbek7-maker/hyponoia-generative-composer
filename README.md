@@ -1,6 +1,46 @@
 # Hyponoia Generative Composer
 
-Hyponoia is an AI-assisted generative music system for adaptive soundscape composition using sample memory, scale-aware material selection, OSC communication with Max/MSP, internal audio analysis, and human-guided learning. The stabilised baseline uses a consistent 48 kHz workflow and content-derived recording/object IDs.
+Hyponoia is a local, AI-assisted generative composition system. It creates and
+develops music from a sound library selected by the user, then learns from
+ratings, written comments and voice feedback.
+
+## Download and play — no coding required
+
+**[Download Hyponoia for macOS from GitHub Releases](https://github.com/penbek7-maker/hyponoia-generative-composer/releases)**
+
+Open the newest release, expand **Assets**, and download the file whose name
+ends in `_macOS.zip`. Do not download the automatic **Source code** archives.
+
+After extracting the ZIP:
+
+1. Double-click `Install Hyponoia.command` once.
+2. Double-click `Open Hyponoia.command` whenever you want to use Hyponoia.
+3. Choose a folder containing your WAV sounds.
+4. Generate, listen, give feedback and generate again.
+
+Python commands are not required for this path. Max/MSP is optional and is used
+only for the extended live-performance environment.
+
+## Explore how it was made
+
+The public project is organised as a readable research portfolio as well as a
+downloadable musical tool:
+
+- **[Guided Python portfolio](docs/PYTHON_PORTFOLIO.md):** a short path through
+  the selected scripts that show how the system was built, from sound memory
+  and embeddings to generation and preference learning.
+- **Application and learning system:** the remaining source stays available
+  for reproducibility, but the portfolio deliberately highlights only the
+  files that explain the main creative and research decisions.
+- **Max/MSP:** the optional live-performance project is kept separately in the
+  [Hyponoia Max/MSP repository](https://github.com/penbek7-maker/hyponoia-maxmsp).
+
+## What Hyponoia does
+
+Hyponoia uses sample memory, scale-aware material selection, OSC communication
+with Max/MSP, internal audio analysis, deep representation assistance and
+human-guided learning. The stabilised baseline uses a consistent 48 kHz
+workflow and content-derived recording/object IDs.
 
 The system selects and transforms musical materials from a user-defined audio memory. Human evaluation and an internal critic progressively influence global compositional weights and sample-level selection values.
 
@@ -218,8 +258,9 @@ and:
 
 Human ratings are the primary learning target. The Critic is stored as an
 auxiliary diagnostic signal rather than silently overriding the user's
-evaluation. Free Greek or English comments use a small local language model
-with a safe deterministic fallback. Typed and locally transcribed voice input
+evaluation. Free Greek or English comments use the pinned local `qwen3:4b`
+language model through Ollama, with a clearly labelled deterministic fallback
+when that one-time local setup is not ready. Typed and locally transcribed voice input
 follow the same preview-and-confirm path. Ratings, language feedback and the
 explicit keep/reject/unsure decision form one auditable whole-composition
 event. D1, D3 and D5 retain level-specific learning, while confirmed positive

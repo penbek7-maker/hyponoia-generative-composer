@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -14,6 +15,13 @@ from feedback_input_v1 import INTENT_LABELS_EL, INTENT_LABELS_EN, load_feedback_
 from hyponoia_runtime import update_user_config
 from hyponoia_stability import atomic_write_json
 from learning_backup_v1 import archive_and_reset_learning, export_learning_backup
+from local_language_model_v1 import (
+    DEFAULT_MODEL,
+    OLLAMA_DOWNLOAD_URL,
+    LanguageModelSetupError,
+    language_model_status,
+    prepare_language_model,
+)
 from voice_feedback_v1 import (
     LocalWhisperTranscriber,
     VoiceRecorder,
@@ -82,6 +90,10 @@ UI_TEXT = {
         "saved": "Το feedback αποθηκεύτηκε για {levels}. Η επόμενη σύνθεση θα χρησιμοποιήσει τη νέα μάθηση.",
         "export": "Εξαγωγή learning backup",
         "reset": "Επιστροφή στην αρχική βάση",
+        "context_ready": "Κατανόηση συμφραζομένων: ΕΝΕΡΓΗ — τοπικό {model}",
+        "context_basic": "Κατανόηση συμφραζομένων: ΒΑΣΙΚΗ — ενεργοποίησε το μικρό τοπικό μοντέλο",
+        "context_setup": "Ενεργοποίηση κατανόησης",
+        "context_downloading": "Γίνεται λήψη του τοπικού μοντέλου (περίπου 2,5 GB)…",
     },
     "en": {
         "intro": "Hyponoia will first show you what it understood. Nothing changes until you press ‘Apply’.",
@@ -107,6 +119,10 @@ UI_TEXT = {
         "saved": "Feedback was saved for {levels}. The next composition will use the updated learning.",
         "export": "Export learning backup",
         "reset": "Return to release baseline",
+        "context_ready": "Context understanding: ON — local {model}",
+        "context_basic": "Context understanding: BASIC — enable the small local model",
+        "context_setup": "Enable context understanding",
+        "context_downloading": "Downloading the local model (about 2.5 GB)…",
     },
 }
 
@@ -230,7 +246,9 @@ class FeedbackApp:
         self.voice_recorder: VoiceRecorder | None = None
         self.voice_transcriber = LocalWhisperTranscriber()
         self.voice_busy = False
+        self.context_busy = False
         self._build()
+        self.refresh_context_model()
         if not embedded:
             self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -258,6 +276,22 @@ class FeedbackApp:
             justify="left",
         )
         self.intro_label.pack(anchor="w", pady=(6, 12))
+
+        context_box = ttk.LabelFrame(frame, text="Local language understanding", padding=10)
+        context_box.pack(fill="x", pady=(0, 12))
+        self.context_status = tk.StringVar(master=self.container)
+        ttk.Label(
+            context_box,
+            textvariable=self.context_status,
+            wraplength=620,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True)
+        self.context_button = ttk.Button(
+            context_box,
+            text=UI_TEXT["el"]["context_setup"],
+            command=self.setup_context_model,
+        )
+        self.context_button.pack(side="right", padx=(10, 0))
 
         level_row = ttk.Frame(frame)
         level_row.pack(fill="x")
@@ -399,6 +433,8 @@ class FeedbackApp:
         self.apply_button.configure(text=self._t("apply"))
         self.export_button.configure(text=self._t("export"))
         self.reset_button.configure(text=self._t("reset"))
+        self.context_button.configure(text=self._t("context_setup"))
+        self.refresh_context_model()
         self.question.set(feedback_question(self.level.get(), self.ui_language))
         if self.voice_busy:
             self.voice_button.configure(text=self._t("transcribing"))
@@ -420,6 +456,70 @@ class FeedbackApp:
                     self.preview["event"], self.preview["changes"], self.ui_language
                 )
             )
+
+    def refresh_context_model(self) -> None:
+        info = language_model_status()
+        if info["ready"]:
+            self.context_status.set(self._t("context_ready").format(model=DEFAULT_MODEL))
+            self.context_button.configure(state="disabled")
+        else:
+            self.context_status.set(self._t("context_basic"))
+            self.context_button.configure(state="disabled" if self.context_busy else "normal")
+
+    def setup_context_model(self) -> None:
+        info = language_model_status()
+        if info["ready"]:
+            self.refresh_context_model()
+            return
+        if not info["runner_installed"]:
+            subprocess.Popen(["open", OLLAMA_DOWNLOAD_URL])
+            message = (
+                "Άνοιξε η επίσημη σελίδα του Ollama. Εγκατάστησέ το, άνοιξέ το μία φορά "
+                "και μετά πάτησε ξανά ‘Ενεργοποίηση κατανόησης’."
+                if self.ui_language == "el"
+                else "The official Ollama page is open. Install it, open it once, then press "
+                "‘Enable context understanding’ again."
+            )
+            messagebox.showinfo("Hyponoia", message)
+            return
+        question = (
+                "Να κατεβάσω τώρα το μικρό τοπικό γλωσσικό μοντέλο; Χρειάζεται περίπου 2,5 GB "
+            "και τα σχόλια θα παραμένουν στον υπολογιστή σου."
+            if self.ui_language == "el"
+            else "Download the small local language model now? It needs about 2.5 GB and "
+            "your comments will remain on your computer."
+        )
+        if not messagebox.askyesno("Hyponoia", question):
+            return
+        self.context_busy = True
+        self.context_status.set(self._t("context_downloading"))
+        self.context_button.configure(state="disabled")
+        threading.Thread(target=self._context_model_worker, daemon=True).start()
+
+    def _context_model_worker(self) -> None:
+        try:
+            prepare_language_model()
+        except LanguageModelSetupError as exc:
+            self.root.after(0, self._context_model_failed, str(exc))
+            return
+        self.root.after(0, self._context_model_ready)
+
+    def _context_model_ready(self) -> None:
+        self.context_busy = False
+        self.refresh_context_model()
+        message = (
+            "Η κατανόηση συμφραζομένων είναι ενεργή. Τα ελληνικά και αγγλικά σχόλια "
+            "αναλύονται πλέον τοπικά."
+            if self.ui_language == "el"
+            else "Context understanding is active. Greek and English comments are now "
+            "interpreted locally."
+        )
+        messagebox.showinfo("Hyponoia", message)
+
+    def _context_model_failed(self, detail: str) -> None:
+        self.context_busy = False
+        self.refresh_context_model()
+        messagebox.showerror("Hyponoia", detail)
 
     def _invalidate(self) -> None:
         self.preview = None

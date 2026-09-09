@@ -120,8 +120,28 @@ class HyponoiaApp:
         tab.columnconfigure(3, weight=1)
 
     def _build_feedback(self, tab: ttk.Frame) -> None:
+        canvas = tk.Canvas(tab, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        content = ttk.Frame(canvas)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def refresh_scroll_region(_event=None) -> None:
+            bounds = canvas.bbox("all")
+            if bounds is not None:
+                canvas.configure(scrollregion=bounds)
+
+        def fit_content_width(event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+
+        content.bind("<Configure>", refresh_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+        self.feedback_canvas = canvas
         self.feedback_app = FeedbackApp(
-            tab,
+            content,
             embedded=True,
             level_var=self.level,
             on_applied=self.feedback_applied,

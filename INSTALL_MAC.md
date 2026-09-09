@@ -7,6 +7,15 @@ For normal use there are only two steps:
 1. Double-click `Install Hyponoia.command` once.
 2. Double-click `Open Hyponoia.command` whenever you want to compose.
 
+The first time you open **Teach Hyponoia**, press **Enable context
+understanding**. If the local Ollama runtime is missing, Hyponoia opens its
+official macOS download page. Install and open Ollama once, return to Hyponoia
+and press the same button again. Hyponoia then downloads the pinned multilingual
+`qwen3:4b` model (about 2.5 GB). This is a one-time step; comments remain on
+the user's computer. Until it is complete, Hyponoia clearly reports **BASIC**
+and uses its limited safety vocabulary instead of claiming contextual
+understanding.
+
 The installer creates an isolated Python environment and prepares the local
 Greek/English voice model. It never uploads, moves or edits the user's WAV
 library. If macOS blocks a downloaded `.command` file, right-click it once and
@@ -58,7 +67,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the current Phase 2 branch: `177 passed`.
+Expected result for the current Phase 2 branch: `183 passed`.
 
 ## 5. Transfer personal Hyponoia data
 
