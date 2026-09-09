@@ -2,7 +2,7 @@
 
 ## Automated gate
 
-- [x] Complete Python test suite: 183 passed
+- [x] Complete Python test suite: 185 passed
 - [x] Release ZIP excludes personal audio and learning data
 - [x] Release ZIP excludes developer-only dependencies and utilities
 - [x] Contextual Greek/English feedback has a labelled fallback

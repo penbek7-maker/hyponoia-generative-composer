@@ -67,7 +67,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the current Phase 2 branch: `183 passed`.
+Expected result for the current release branch: `185 passed`.
 
 ## 5. Transfer personal Hyponoia data
 

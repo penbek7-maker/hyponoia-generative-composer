@@ -253,7 +253,7 @@ class FeedbackApp:
             self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build(self) -> None:
-        frame = ttk.Frame(self.container, padding=18 if self.embedded else 24)
+        frame = ttk.Frame(self.container, padding=14 if self.embedded else 22)
         frame.pack(fill="both", expand=True)
         title_row = ttk.Frame(frame)
         title_row.pack(fill="x")
@@ -275,10 +275,10 @@ class FeedbackApp:
             wraplength=700,
             justify="left",
         )
-        self.intro_label.pack(anchor="w", pady=(6, 12))
+        self.intro_label.pack(anchor="w", pady=(4, 8))
 
-        context_box = ttk.LabelFrame(frame, text="Local language understanding", padding=10)
-        context_box.pack(fill="x", pady=(0, 12))
+        context_box = ttk.LabelFrame(frame, text="Local language understanding", padding=8)
+        context_box.pack(fill="x", pady=(0, 9))
         self.context_status = tk.StringVar(master=self.container)
         ttk.Label(
             context_box,
@@ -313,9 +313,9 @@ class FeedbackApp:
             textvariable=self.question,
             wraplength=700,
             justify="left",
-        ).pack(anchor="w", pady=(14, 4))
+        ).pack(anchor="w", pady=(10, 3))
         voice_buttons = ttk.Frame(frame)
-        voice_buttons.pack(fill="x", pady=(2, 4))
+        voice_buttons.pack(fill="x", pady=(1, 3))
         self.listen_button = ttk.Button(
             voice_buttons,
             text=UI_TEXT["el"]["listen"],
@@ -329,8 +329,8 @@ class FeedbackApp:
         )
         self.voice_button.pack(side="left", padx=(10, 0))
 
-        self.ratings_frame = ttk.LabelFrame(frame, text=UI_TEXT["el"]["ratings"], padding=10)
-        self.ratings_frame.pack(fill="x", pady=(12, 4))
+        self.ratings_frame = ttk.LabelFrame(frame, text=UI_TEXT["el"]["ratings"], padding=8)
+        self.ratings_frame.pack(fill="x", pady=(9, 3))
         self.rating_labels = {}
         for index, (name, label) in enumerate(RATING_LABELS["el"].items()):
             row, pair = divmod(index, 2)
@@ -353,7 +353,7 @@ class FeedbackApp:
         self.ratings_frame.columnconfigure(2, weight=1)
 
         baseline_row = ttk.Frame(frame)
-        baseline_row.pack(fill="x", pady=(8, 0))
+        baseline_row.pack(fill="x", pady=(6, 0))
         self.baseline_label = ttk.Label(baseline_row, text=UI_TEXT["el"]["baseline"])
         self.baseline_label.pack(side="left")
         self.baseline_menu = ttk.Combobox(
@@ -367,13 +367,13 @@ class FeedbackApp:
         self.baseline_menu.bind("<<ComboboxSelected>>", lambda _event: self._invalidate())
 
         self.comment_label = ttk.Label(frame, text=UI_TEXT["el"]["comment"])
-        self.comment_label.pack(anchor="w", pady=(10, 4))
-        self.comment = tk.Text(frame, height=4, wrap="word")
+        self.comment_label.pack(anchor="w", pady=(7, 3))
+        self.comment = tk.Text(frame, height=3, wrap="word")
         self.comment.pack(fill="x")
         self.comment.bind("<KeyRelease>", lambda _event: self._invalidate())
 
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=16)
+        buttons.pack(fill="x", pady=11)
         self.preview_button = ttk.Button(buttons, text=UI_TEXT["el"]["preview"], command=self.show_preview)
         self.preview_button.pack(side="left")
         self.apply_button = ttk.Button(
@@ -385,10 +385,10 @@ class FeedbackApp:
         self.apply_button.pack(side="left", padx=(10, 0))
 
         ttk.Label(frame, textvariable=self.status, wraplength=700, justify="left").pack(anchor="w")
-        self.details = tk.Text(frame, height=12, wrap="word", state="disabled")
-        self.details.pack(fill="both", expand=True, pady=(10, 0))
+        self.details = tk.Text(frame, height=9, wrap="word", state="disabled")
+        self.details.pack(fill="both", expand=True, pady=(7, 0))
         learning_actions = ttk.Frame(frame)
-        learning_actions.pack(fill="x", pady=(10, 0))
+        learning_actions.pack(fill="x", pady=(7, 0))
         self.export_button = ttk.Button(
             learning_actions, text=UI_TEXT["el"]["export"], command=self.export_learning
         )

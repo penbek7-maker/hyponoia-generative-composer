@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from composition_preference_v1 import CompositionPreferenceAssist
+from hyponoia_app import ROOT_NOTE_PITCHES, format_runtime_summary
 from hyponoia_runtime import (
     PROJECT_DIR,
     generator_command,
@@ -80,3 +81,23 @@ def test_user_config_update_keeps_paths_portable(tmp_path):
     }
     update_user_config(tmp_path, composition_preference=None)
     assert load_user_config(tmp_path) == {"ui_language": "el"}
+
+
+def test_final_ui_uses_musical_root_names():
+    assert ROOT_NOTE_PITCHES["C"] == 0
+    assert ROOT_NOTE_PITCHES["F♯ / G♭"] == 6
+    assert ROOT_NOTE_PITCHES["B"] == 11
+
+
+def test_final_ui_runtime_summary_is_clear_without_private_detail():
+    ready = {
+        "ready_to_generate": True,
+        "recordings": 34,
+        "preference_review_count": 0,
+    }
+    assert format_runtime_summary(ready) == (
+        "Ready to compose · 34 recordings · deep listening and learning active"
+    )
+    assert format_runtime_summary({"source_audio_ready": False}) == (
+        "Start here: choose a folder containing your WAV sounds, then update the library."
+    )

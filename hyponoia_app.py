@@ -14,18 +14,56 @@ from max_live_v1 import MaxLiveController, find_max_project
 from update_library_v1 import update_library
 
 
+ROOT_NOTE_PITCHES = {
+    "C": 0,
+    "C♯ / D♭": 1,
+    "D": 2,
+    "D♯ / E♭": 3,
+    "E": 4,
+    "F": 5,
+    "F♯ / G♭": 6,
+    "G": 7,
+    "G♯ / A♭": 8,
+    "A": 9,
+    "A♯ / B♭": 10,
+    "B": 11,
+}
+
+
+def format_runtime_summary(info: dict) -> str:
+    """Turn technical readiness into one useful next-step message."""
+    if info.get("ready_to_generate"):
+        return (
+            f"Ready to compose · {info.get('recordings', 0)} recordings"
+            " · deep listening and learning active"
+        )
+    if not info.get("source_audio_ready"):
+        return "Start here: choose a folder containing your WAV sounds, then update the library."
+    if not info.get("memory_ready"):
+        return "Your sounds are selected. Update the library to prepare them for composition."
+    if not info.get("representation", {}).get("active"):
+        return "The sound library is ready, but the deep-listening model needs attention."
+    if not info.get("composition_preference", {}).get("active"):
+        return "The sound library is ready, but the preference model needs attention."
+    return "Hyponoia is checking the local composition environment."
+
+
 class HyponoiaApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Hyponoia")
-        self.root.geometry("1000x850")
-        self.root.minsize(820, 700)
+        self.root.geometry("1080x820")
+        self.root.minsize(900, 680)
         self.library_folder = tk.StringVar()
         self.level = tk.StringVar(value="D1")
-        self.scale = tk.StringVar(value="free")
-        self.root_pitch = tk.IntVar(value=0)
-        self.confidence = tk.DoubleVar(value=0.0)
+        self.scale = tk.StringVar(value="minor")
+        self.root_note = tk.StringVar(value="C")
+        self.confidence = tk.DoubleVar(value=0.8)
         self.status = tk.StringVar(value="Checking Hyponoia…")
+        self.render_status = tk.StringVar(
+            value="Choose a dream level and musical scale, then create your composition."
+        )
+        self.render_log_visible = False
         self.max_status = tk.StringVar(value="Live connection is stopped.")
         self.max_controller = MaxLiveController(PROJECT_DIR)
         self._build()
@@ -35,12 +73,14 @@ class HyponoiaApp:
     def _build(self) -> None:
         frame = ttk.Frame(self.root, padding=22)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Hyponoia", font=("Helvetica", 28, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Hyponoia", font=("Helvetica", 30, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
-            text="Library → Generate → Listen → Feedback → Generate again",
-        ).pack(anchor="w", pady=(2, 14))
-        ttk.Label(frame, textvariable=self.status, wraplength=830, justify="left").pack(anchor="w")
+            text="Your sounds → Your composition → Your feedback → A new composition",
+        ).pack(anchor="w", pady=(2, 12))
+        status_box = ttk.LabelFrame(frame, text="Hyponoia status", padding=(12, 8))
+        status_box.pack(fill="x")
+        ttk.Label(status_box, textvariable=self.status, justify="left").pack(anchor="w")
 
         self.notebook = ttk.Notebook(frame)
         self.notebook.pack(fill="both", expand=True, pady=(16, 0))
@@ -52,6 +92,8 @@ class HyponoiaApp:
         self.notebook.add(compose_tab, text="2. Generate & Listen")
         self.notebook.add(feedback_tab, text="3. Teach Hyponoia")
         self.notebook.add(live_tab, text="4. Live / Max")
+        self.compose_tab = compose_tab
+        self.feedback_tab = feedback_tab
         self._build_library(library_tab)
         self._build_composer(compose_tab)
         self._build_feedback(feedback_tab)
@@ -85,38 +127,67 @@ class HyponoiaApp:
         self.update_library_button.pack(side="left", padx=(8, 0))
         self.library_details = tk.Text(tab, height=16, wrap="word", state="disabled")
         self.library_details.pack(fill="both", expand=True)
+        self._set_text(
+            self.library_details,
+            "Choose your WAV folder, preview the changes, then update the library. "
+            "Hyponoia never moves or edits your original sounds.",
+        )
 
     def _build_composer(self, tab: ttk.Frame) -> None:
         ttk.Label(tab, text="Create a composition", font=("Helvetica", 18, "bold")).grid(
             row=0, column=0, columnspan=4, sticky="w"
         )
-        ttk.Label(tab, text="Dream level").grid(row=1, column=0, sticky="w", pady=(18, 4))
+        ttk.Label(
+            tab,
+            text="D1 is focused, D3 develops further, and D5 creates the fullest form.",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 8))
+        ttk.Label(tab, text="Dream level").grid(row=2, column=0, sticky="w", pady=(8, 4))
         ttk.Combobox(
             tab, textvariable=self.level, values=("D1", "D3", "D5"), state="readonly", width=8
-        ).grid(row=2, column=0, sticky="w")
-        ttk.Label(tab, text="Scale").grid(row=1, column=1, sticky="w", padx=(18, 0), pady=(18, 4))
+        ).grid(row=3, column=0, sticky="w")
+        ttk.Label(tab, text="Scale").grid(row=2, column=1, sticky="w", padx=(18, 0), pady=(8, 4))
         ttk.Combobox(
-            tab, textvariable=self.scale, values=("free", "major", "minor"), state="readonly", width=10
-        ).grid(row=2, column=1, sticky="w", padx=(18, 0))
-        ttk.Label(tab, text="Root (0–11)").grid(row=1, column=2, sticky="w", padx=(18, 0), pady=(18, 4))
-        ttk.Spinbox(tab, from_=0, to=11, textvariable=self.root_pitch, width=7).grid(
-            row=2, column=2, sticky="w", padx=(18, 0)
-        )
-        ttk.Label(tab, text="Harmony confidence").grid(
-            row=1, column=3, sticky="w", padx=(18, 0), pady=(18, 4)
+            tab, textvariable=self.scale, values=("minor", "major", "free"), state="readonly", width=10
+        ).grid(row=3, column=1, sticky="w", padx=(18, 0))
+        ttk.Label(tab, text="Root note").grid(row=2, column=2, sticky="w", padx=(18, 0), pady=(8, 4))
+        ttk.Combobox(
+            tab,
+            textvariable=self.root_note,
+            values=tuple(ROOT_NOTE_PITCHES),
+            state="readonly",
+            width=11,
+        ).grid(row=3, column=2, sticky="w", padx=(18, 0))
+        ttk.Label(tab, text="Scale strength").grid(
+            row=2, column=3, sticky="w", padx=(18, 0), pady=(8, 4)
         )
         ttk.Spinbox(
             tab, from_=0.0, to=1.0, increment=0.05, textvariable=self.confidence, width=8
-        ).grid(row=2, column=3, sticky="w", padx=(18, 0))
+        ).grid(row=3, column=3, sticky="w", padx=(18, 0))
         buttons = ttk.Frame(tab)
-        buttons.grid(row=3, column=0, columnspan=4, sticky="w", pady=24)
-        self.generate_button = ttk.Button(buttons, text="Generate", command=self.generate)
+        buttons.grid(row=4, column=0, columnspan=4, sticky="w", pady=20)
+        self.generate_button = ttk.Button(buttons, text="Create composition", command=self.generate)
         self.generate_button.pack(side="left")
-        ttk.Button(buttons, text="Listen to latest", command=self.listen).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Show output folder", command=self.show_output).pack(side="left", padx=(8, 0))
-        self.render_details = tk.Text(tab, height=19, wrap="word", state="disabled")
-        self.render_details.grid(row=4, column=0, columnspan=4, sticky="nsew")
-        tab.rowconfigure(4, weight=1)
+        ttk.Button(buttons, text="Listen", command=self.listen).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            buttons,
+            text="Continue to feedback",
+            command=lambda: self.notebook.select(self.feedback_tab),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Output folder", command=self.show_output).pack(side="left", padx=(8, 0))
+
+        result_box = ttk.LabelFrame(tab, text="Composition", padding=12)
+        result_box.grid(row=5, column=0, columnspan=4, sticky="ew")
+        ttk.Label(result_box, textvariable=self.render_status, wraplength=720, justify="left").pack(
+            side="left", fill="x", expand=True
+        )
+        self.render_details_button = ttk.Button(
+            result_box, text="Show technical details", command=self._toggle_render_details
+        )
+        self.render_details_button.pack(side="right", padx=(12, 0))
+        self.render_details = tk.Text(tab, height=13, wrap="word", state="disabled")
+        self.render_details.grid(row=6, column=0, columnspan=4, sticky="nsew", pady=(10, 0))
+        self.render_details.grid_remove()
+        tab.rowconfigure(6, weight=1)
         tab.columnconfigure(3, weight=1)
 
     def _build_feedback(self, tab: ttk.Frame) -> None:
@@ -146,6 +217,12 @@ class HyponoiaApp:
             level_var=self.level,
             on_applied=self.feedback_applied,
         )
+        self.root.bind("<MouseWheel>", self._scroll_feedback, add="+")
+
+    def _scroll_feedback(self, event) -> None:
+        if self.notebook.select() != str(self.feedback_tab) or not event.delta:
+            return
+        self.feedback_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
     def _build_live(self, tab: ttk.Frame) -> None:
         ttk.Label(tab, text="Live Performance / Max", font=("Helvetica", 20, "bold")).pack(anchor="w")
@@ -194,15 +271,16 @@ class HyponoiaApp:
 
     def refresh_status(self) -> None:
         info = runtime_status(PROJECT_DIR)
-        deep = info["representation"]
-        preference = info["composition_preference"]
-        self.status.set(
-            f"Library: {info['recordings']} recordings / {info['sound_objects']} objects  •  "
-            f"Source WAVs: {'ON' if info['source_audio_ready'] else 'MISSING'} ({info['source_wav_count']})  •  "
-            f"Deep embeddings: {'ON' if deep['active'] else 'OFF'} ({deep['embedding_count']})  •  "
-            f"Preference learning: {'ON' if preference['active'] else 'OFF'} "
-            f"({info['preference_review_count']} personal reviews)"
-        )
+        self.status.set(format_runtime_summary(info))
+
+    def _toggle_render_details(self) -> None:
+        self.render_log_visible = not self.render_log_visible
+        if self.render_log_visible:
+            self.render_details.grid()
+            self.render_details_button.configure(text="Hide technical details")
+        else:
+            self.render_details.grid_remove()
+            self.render_details_button.configure(text="Show technical details")
 
     def refresh_max_status(self) -> None:
         info = self.max_controller.snapshot()
@@ -304,7 +382,7 @@ class HyponoiaApp:
         try:
             command = generator_command(
                 level,
-                root_pitch=self.root_pitch.get(),
+                root_pitch=ROOT_NOTE_PITCHES[self.root_note.get()],
                 scale=self.scale.get(),
                 confidence=self.confidence.get(),
                 project_dir=PROJECT_DIR,
@@ -313,6 +391,7 @@ class HyponoiaApp:
             messagebox.showinfo("Check the settings", str(exc))
             return
         self.generate_button.configure(state="disabled")
+        self.render_status.set(f"Creating {self.level.get()}… This may take a moment.")
         self._set_text(self.render_details, f"Generating {self.level.get()}…")
 
         def work() -> None:
@@ -331,7 +410,15 @@ class HyponoiaApp:
         )
         self.refresh_status()
         if returncode == 0:
-            messagebox.showinfo("Hyponoia", "The composition is ready. Press ‘Listen to latest’.")
+            self.render_status.set(
+                f"{self.level.get()} is ready in {self.root_note.get()} {self.scale.get()}. "
+                "Listen, then tell Hyponoia what should stay and what should change."
+            )
+            messagebox.showinfo("Hyponoia", "Your composition is ready. Press ‘Listen’.")
+        else:
+            self.render_status.set("The composition could not be created. Open the technical details below.")
+            if not self.render_log_visible:
+                self._toggle_render_details()
 
     def listen(self) -> None:
         path = PROJECT_DIR / "output" / "current.wav"
@@ -354,8 +441,9 @@ class HyponoiaApp:
         if learning.get("updated"):
             messagebox.showinfo(
                 "Hyponoia learned",
-                "The ratings and comment were saved. The whole-composition preference model was updated safely.",
+                "Your ratings and comment were saved. Create again to hear the new preference.",
             )
+            self.notebook.select(self.compose_tab)
 
     def close(self) -> None:
         self.max_controller.stop()

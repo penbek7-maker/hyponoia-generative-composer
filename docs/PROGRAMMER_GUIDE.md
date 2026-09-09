@@ -56,7 +56,7 @@ committed or bundled into a public release.
 python -m pytest -q
 ```
 
-The current release gate contains 183 tests. They cover audio continuity,
+The current release gate contains 185 tests. They cover audio continuity,
 incremental embeddings, D1/D3/D5 generation behaviour, feedback, contextual
 language interpretation, preference learning, backup/reset, packaging and the
 Max OSC bridge.
