@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +16,26 @@ LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 7401
 MAX_IP = "127.0.0.1"
 MAX_PORT = 7402
+
+
+def find_max_project(project_dir: str | Path) -> Path | None:
+    """Find a saved or bundled Max project without hard-coded user paths."""
+    root = Path(project_dir).resolve()
+    config_path = root / "hyponoia_user_config.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        config = {}
+    saved = config.get("max_project") if isinstance(config, dict) else None
+    candidates = []
+    if saved:
+        saved_path = Path(str(saved)).expanduser()
+        candidates.append(saved_path if saved_path.is_absolute() else root / saved_path)
+    candidates.extend([
+        root.parent / "Max Live" / "Hyponoia_Rhoē" / "Hyponoia_Rhoē.maxproj",
+        root.parent / "hyponoia-maxmsp" / "Hyponoia_Rhoē" / "Hyponoia_Rhoē.maxproj",
+    ])
+    return next((path.resolve() for path in candidates if path.is_file()), None)
 
 
 def udp_port_is_available(host: str = LISTEN_IP, port: int = LISTEN_PORT) -> bool:

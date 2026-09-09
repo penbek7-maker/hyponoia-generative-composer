@@ -36,6 +36,9 @@ def update_user_config(project_dir: str | Path = PROJECT_DIR, **values: Any) -> 
     root = Path(project_dir).resolve()
     config = load_user_config(root)
     for key, value in values.items():
+        if value is None:
+            config.pop(str(key), None)
+            continue
         if isinstance(value, Path):
             value = os.path.relpath(value.expanduser().resolve(), root)
         config[str(key)] = value

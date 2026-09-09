@@ -42,6 +42,8 @@ phase2_artifacts/*
 !phase2_artifacts/learning_profile_seed.json
 local_models/
 logs/
+install.log
+learning_backups/
 
 # Old development files and backups
 Generators old/

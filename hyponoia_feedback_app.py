@@ -6,13 +6,14 @@ import json
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from adaptive_composition_preference_v1 import preference_score, update_preference_from_review
 from composition_feedback_v1 import apply_composition_feedback, build_composition_feedback
 from feedback_input_v1 import INTENT_LABELS_EL, INTENT_LABELS_EN, load_feedback_profile
 from hyponoia_runtime import update_user_config
 from hyponoia_stability import atomic_write_json
+from learning_backup_v1 import archive_and_reset_learning, export_learning_backup
 from voice_feedback_v1 import (
     LocalWhisperTranscriber,
     VoiceRecorder,
@@ -79,6 +80,8 @@ UI_TEXT = {
         "ready": "Έτοιμο για έλεγχο. Αν συμφωνείς, πάτησε ‘Εφάρμοσε το feedback’.",
         "no_change": "Δεν έγινε καμία αλλαγή. Δοκίμασε πιο συγκεκριμένη διατύπωση.",
         "saved": "Το feedback αποθηκεύτηκε για {levels}. Η επόμενη σύνθεση θα χρησιμοποιήσει τη νέα μάθηση.",
+        "export": "Εξαγωγή learning backup",
+        "reset": "Επιστροφή στην αρχική βάση",
     },
     "en": {
         "intro": "Hyponoia will first show you what it understood. Nothing changes until you press ‘Apply’.",
@@ -102,6 +105,8 @@ UI_TEXT = {
         "ready": "Ready to review. If this is correct, press ‘Apply feedback’.",
         "no_change": "No change was proposed. Try a more specific description.",
         "saved": "Feedback was saved for {levels}. The next composition will use the updated learning.",
+        "export": "Export learning backup",
+        "reset": "Return to release baseline",
     },
 }
 
@@ -348,6 +353,16 @@ class FeedbackApp:
         ttk.Label(frame, textvariable=self.status, wraplength=700, justify="left").pack(anchor="w")
         self.details = tk.Text(frame, height=12, wrap="word", state="disabled")
         self.details.pack(fill="both", expand=True, pady=(10, 0))
+        learning_actions = ttk.Frame(frame)
+        learning_actions.pack(fill="x", pady=(10, 0))
+        self.export_button = ttk.Button(
+            learning_actions, text=UI_TEXT["el"]["export"], command=self.export_learning
+        )
+        self.export_button.pack(side="left")
+        self.reset_button = ttk.Button(
+            learning_actions, text=UI_TEXT["el"]["reset"], command=self.reset_learning
+        )
+        self.reset_button.pack(side="left", padx=(8, 0))
 
     @property
     def ui_language(self) -> str:
@@ -382,6 +397,8 @@ class FeedbackApp:
         self.baseline_name.set(next(label for label, code in choices.items() if code == decision))
         self.preview_button.configure(text=self._t("preview"))
         self.apply_button.configure(text=self._t("apply"))
+        self.export_button.configure(text=self._t("export"))
+        self.reset_button.configure(text=self._t("reset"))
         self.question.set(feedback_question(self.level.get(), self.ui_language))
         if self.voice_busy:
             self.voice_button.configure(text=self._t("transcribing"))
@@ -570,6 +587,44 @@ class FeedbackApp:
         self.status.set(self._t("saved").format(levels=event["dream_level"]))
         if callable(self.on_applied):
             self.on_applied(event, learning)
+
+    def export_learning(self) -> None:
+        destination = filedialog.asksaveasfilename(
+            title=self._t("export"),
+            defaultextension=".zip",
+            initialfile="Hyponoia_Learning_Backup.zip",
+            filetypes=(("ZIP archive", "*.zip"),),
+        )
+        if not destination:
+            return
+        try:
+            result = export_learning_backup(PROJECT_DIR, destination)
+        except OSError as exc:
+            messagebox.showerror("Backup failed", str(exc))
+            return
+        messagebox.showinfo("Learning backup", f"Saved:\n{result['path']}")
+
+    def reset_learning(self) -> None:
+        message = (
+            "Η προσωπική μάθηση θα αρχειοθετηθεί και το Hyponoia θα επιστρέψει στην εγκεκριμένη αρχική βάση. Η βιβλιοθήκη δεν θα αλλάξει."
+            if self.ui_language == "el"
+            else "Personal learning will be archived and Hyponoia will return to the approved release baseline. The library will not change."
+        )
+        if not messagebox.askyesno(self._t("reset"), message):
+            return
+        try:
+            result = archive_and_reset_learning(PROJECT_DIR)
+        except OSError as exc:
+            messagebox.showerror("Reset failed", str(exc))
+            return
+        self.preview = None
+        self.apply_button.configure(state="disabled")
+        self.status.set(
+            ("Η αρχική βάση επανήλθε. Backup: " if self.ui_language == "el" else "Release baseline restored. Backup: ")
+            + result["archive"]
+        )
+        if callable(self.on_applied):
+            self.on_applied({}, {"updated": False})
 
     def close(self) -> None:
         if self.voice_recorder is not None:

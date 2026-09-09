@@ -1,17 +1,25 @@
-# Hyponoia Phase 2 — macOS Installation
+# Hyponoia — macOS Installation
 
 ## Simple installation
 
-For normal use, double-click:
+For normal use there are only two steps:
 
-`Install Hyponoia.command`
+1. Double-click `Install Hyponoia.command` once.
+2. Double-click `Open Hyponoia.command` whenever you want to compose.
 
-When installation finishes, double-click:
+The installer creates an isolated Python environment and prepares the local
+Greek/English voice model. It never uploads, moves or edits the user's WAV
+library. If macOS blocks a downloaded `.command` file, right-click it once and
+choose **Open**.
 
-`Open Hyponoia.command`
+Inside Hyponoia, follow the four numbered tabs:
 
-The application then guides the user through Library, Generate, Listen and
-Feedback. The manual steps below remain available for diagnosis and research.
+- **Library** — choose any folder of WAV files; around 100 is recommended, not required.
+- **Generate & Listen** — create D1, D3 or D5 and listen to the latest render.
+- **Teach Hyponoia** — use ratings, text or local voice feedback.
+- **Live / Max** — optionally start the OSC connection for live performance.
+
+The manual steps below remain available for diagnosis and research use.
 
 ## 1. Keep the old project untouched
 
@@ -50,7 +58,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the current Phase 2 branch: `147 passed`.
+Expected result for the current Phase 2 branch: `177 passed`.
 
 ## 5. Transfer personal Hyponoia data
 
@@ -114,7 +122,7 @@ Replace `RENDER_NAME.wav` with the timestamped generated filename:
 python critic_v2.py "output/RENDER_NAME.wav"
 ```
 
-## 10. Give rating and text feedback
+## 10. Give ratings, text or voice feedback
 
 Replace `REPORT_NAME_critic.json` with the generated Critic report:
 
@@ -122,7 +130,13 @@ Replace `REPORT_NAME_critic.json` with the generated Critic report:
 python human_feedback_v1.py "critic_reports/REPORT_NAME_critic.json"
 ```
 
-Enter six ratings from 0 to 100. The optional English text currently recognises a controlled MVP vocabulary including:
+Normal users should use the **Teach Hyponoia** tab. It combines seven ratings
+from 1 to 5, a keep/reject/unsure decision and free Greek or English input.
+Voice is transcribed locally by multilingual Whisper and then follows the same
+preview-and-confirm path as typed text.
+
+The older command-line feedback tool remains available for research workflows.
+Its controlled terms include:
 
 - `more library objects`
 - `greater exploration`

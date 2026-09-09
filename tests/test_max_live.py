@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from max_live_v1 import MaxLiveController
+from max_live_v1 import MaxLiveController, find_max_project
 
 
 class FakeProcess:
@@ -54,3 +54,12 @@ def test_connection_test_uses_dedicated_non_rendering_message(tmp_path):
     result = controller.send_test()
     assert result["sent"] is True
     assert sent == [("/hyponoia/test", 1)]
+
+
+def test_max_project_is_found_in_combined_release_layout(tmp_path):
+    engine = tmp_path / "Hyponoia Engine"
+    project = tmp_path / "Max Live" / "Hyponoia_Rhoē" / "Hyponoia_Rhoē.maxproj"
+    engine.mkdir()
+    project.parent.mkdir(parents=True)
+    project.write_text("{}")
+    assert find_max_project(engine) == project.resolve()

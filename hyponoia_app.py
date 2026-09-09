@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from hyponoia_feedback_app import FeedbackApp
 from hyponoia_runtime import PROJECT_DIR, generator_command, runtime_status
-from max_live_v1 import MaxLiveController
+from max_live_v1 import MaxLiveController, find_max_project
 from update_library_v1 import update_library
 
 
@@ -151,6 +151,7 @@ class HyponoiaApp:
         self.start_max_button.pack(side="left")
         self.stop_max_button = ttk.Button(buttons, text="Stop", command=self.stop_max)
         self.stop_max_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Open Max project", command=self.open_max_project).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Send test to Max", command=self.test_max).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Open connection log", command=self.open_max_log).pack(side="left", padx=(8, 0))
         ttk.Label(
@@ -207,6 +208,21 @@ class HyponoiaApp:
         self.max_status.set(
             f"Test sent to Max at {result['destination']}. Check the Max console for /hyponoia/test 1."
         )
+
+    def open_max_project(self) -> None:
+        path = find_max_project(PROJECT_DIR)
+        if path is None:
+            selected = filedialog.askopenfilename(
+                title="Choose the Hyponoia Max project",
+                filetypes=(("Max project", "*.maxproj"),),
+            )
+            if not selected:
+                return
+            path = Path(selected).resolve()
+            from hyponoia_runtime import update_user_config
+
+            update_user_config(PROJECT_DIR, max_project=path)
+        subprocess.Popen(["open", str(path)])
 
     def open_max_log(self) -> None:
         path = PROJECT_DIR / "logs" / "max_live.log"

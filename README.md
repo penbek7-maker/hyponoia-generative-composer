@@ -141,6 +141,9 @@ The latest render is also available as:
 
 ## 7. Use Hyponoia With Max/MSP
 
+Normal users open the **Live / Max** tab and press **Start live connection**.
+The command-line details below remain useful for debugging and custom patches.
+
 Start the OSC receiver:
 
 `python3 generator_receiver.py`
@@ -213,7 +216,15 @@ and:
 
 `sample_learning_profile.json`
 
-Human ratings are the primary learning target. The Critic is stored as an auxiliary diagnostic signal rather than silently overriding the user's evaluation. Numeric ratings update the common aesthetic profile. Optional English comments use a small deterministic MVP vocabulary; for example, `more musical`, `more rhythmic`, `greater bloom`, `more library objects`, `greater exploration`, `less repetition`, `more synthesizers`, `more energetic`, `faster`, `smoother transitions`, `fewer samples`, `develop the selected sounds`, and `use different materials` change bounded generator controls and are logged with before/after values. Text intent is stored separately for D1, D3 and D5, inferred from the rated render or an explicit `D1:`, `D3:` or `D5:` prefix. All three profiles change only after explicit global language such as `globally` or `in all levels`.
+Human ratings are the primary learning target. The Critic is stored as an
+auxiliary diagnostic signal rather than silently overriding the user's
+evaluation. Free Greek or English comments use a small local language model
+with a safe deterministic fallback. Typed and locally transcribed voice input
+follow the same preview-and-confirm path. Ratings, language feedback and the
+explicit keep/reject/unsure decision form one auditable whole-composition
+event. D1, D3 and D5 retain level-specific learning, while confirmed positive
+and contrast examples update a bounded composition-wide preference head over
+the deep audio embeddings. The frozen release baseline is never overwritten.
 
 ## 10. Learning Loop
 

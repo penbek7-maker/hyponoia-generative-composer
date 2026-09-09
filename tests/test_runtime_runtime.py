@@ -78,3 +78,5 @@ def test_user_config_update_keeps_paths_portable(tmp_path):
         "composition_preference": "composition_preference_v1.json",
         "ui_language": "el",
     }
+    update_user_config(tmp_path, composition_preference=None)
+    assert load_user_config(tmp_path) == {"ui_language": "el"}
