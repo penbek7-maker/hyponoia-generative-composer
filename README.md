@@ -4,10 +4,6 @@ Hyponoia is a local, AI-assisted generative composition system. It creates and
 develops music from a sound library selected by the user, then learns from
 ratings, written comments and voice feedback.
 
-Hyponoia was developed through an artist-led human–AI collaboration, with
-OpenAI Codex supporting its implementation and the technical integration of
-its deep-learning process.
-
 ## Download and play — no coding required
 
 **[Download Hyponoia for macOS from GitHub Releases](https://github.com/penbek7-maker/hyponoia-generative-composer/releases)**
