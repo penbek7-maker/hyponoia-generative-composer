@@ -12,13 +12,49 @@ from pathlib import Path
 
 DEFAULT_VERSION = "2.0.0-rc1"
 RUNTIME_JSON = {"alpha_profile.json", "representation_config.json", "library_source_labels.json"}
+RUNTIME_REQUIREMENTS = {
+    "requirements.txt",
+    "requirements-app.txt",
+    "requirements-representation.txt",
+    "requirements-voice.txt",
+}
+RUNTIME_PYTHON = {
+    "adaptive_composition_preference_v1.py",
+    "composition_feedback_v1.py",
+    "composition_influence_v1.py",
+    "composition_preference_v1.py",
+    "feedback_input_v1.py",
+    "generator_receiver.py",
+    "generator_v3_memory_bloom_smooth.py",
+    "human_feedback_v1.py",
+    "hyponoia_app.py",
+    "hyponoia_feedback_app.py",
+    "hyponoia_runtime.py",
+    "hyponoia_stability.py",
+    "incremental_embeddings_v1.py",
+    "install_voice_model_v1.py",
+    "learning_backup_v1.py",
+    "learning_profile_store_v1.py",
+    "library_coverage_v1.py",
+    "library_manager_v1.py",
+    "local_language_model_v1.py",
+    "local_llm_feedback_v1.py",
+    "max_live_v1.py",
+    "memory_builder_v3.py",
+    "representation_assist_v1.py",
+    "representation_feedback_v2.py",
+    "representation_learning_v1.py",
+    "representation_training_v1.py",
+    "update_library_v1.py",
+    "voice_feedback_v1.py",
+}
 
 
 def is_engine_source(relative: Path) -> bool:
     if len(relative.parts) == 1:
         return (
-            relative.suffix == ".py"
-            or relative.name.startswith("requirements") and relative.suffix == ".txt"
+            relative.name in RUNTIME_PYTHON
+            or relative.name in RUNTIME_REQUIREMENTS
             or relative.name in RUNTIME_JSON
         )
     return relative.parts[0] == "phase2_artifacts" or relative == Path("alpha_memory/.gitkeep")

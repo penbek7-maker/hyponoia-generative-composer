@@ -1,5 +1,6 @@
 .DS_Store
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 venv/
@@ -44,6 +45,7 @@ local_models/
 logs/
 install.log
 learning_backups/
+*.zip
 
 # Old development files and backups
 Generators old/

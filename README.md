@@ -29,11 +29,16 @@ downloadable musical tool:
 - **[Guided Python portfolio](docs/PYTHON_PORTFOLIO.md):** a short path through
   the selected scripts that show how the system was built, from sound memory
   and embeddings to generation and preference learning.
+- **[Programmer guide](docs/PROGRAMMER_GUIDE.md):** the exact development
+  environment, entry points, tests, private-data boundaries and release build.
 - **Application and learning system:** the remaining source stays available
   for reproducibility, but the portfolio deliberately highlights only the
   files that explain the main creative and research decisions.
 - **Max/MSP:** the optional live-performance project is kept separately in the
   [Hyponoia Max/MSP repository](https://github.com/penbek7-maker/hyponoia-maxmsp).
+
+The final pre-release checks are tracked in the
+**[release checklist](docs/RELEASE_CHECKLIST.md)**.
 
 ## What Hyponoia does
 
