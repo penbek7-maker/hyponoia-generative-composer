@@ -355,6 +355,8 @@ def scale_frequencies(low_midi=48, high_midi=96, count=10):
     return [midi_to_hz(notes[i]) for i in indices]
 
 OUTPUT_DURATION = 180
+STEM_LOW_CROSSOVER_HZ = 250
+STEM_HIGH_CROSSOVER_HZ = 4000
 # Material-plan sizes: D1 / D3 / D5
 CORE_COUNT = 6
 EXTRA_D3_COUNT = 4
@@ -1000,6 +1002,7 @@ def save_render_report(
     usage_by_recording,
     role_counts,
     temporal_metrics=None,
+    frequency_stems=None,
 ):
     os.makedirs(RENDER_REPORT_FOLDER, exist_ok=True)
     report = {
@@ -1033,6 +1036,7 @@ def save_render_report(
             for key, value in d5_temporal_profile(dream_level).items()
         },
         "temporal_metrics": temporal_metrics or {},
+        "frequency_stems": frequency_stems or {},
         "reference_targets": dict(D5_REFERENCE_TARGETS) if dream_level == 5 else {},
         "target_sample_rate": TARGET_SR,
     }
@@ -1724,6 +1728,62 @@ def reverse_blend(x, amount=0.35):
 def butter_filter(x, mode, cutoff):
     b, a = butter(2, cutoff / (TARGET_SR / 2), btype=mode)
     return lfilter(b, a, x).astype(np.float32)
+
+
+def split_frequency_stems(
+    output,
+    low_crossover=STEM_LOW_CROSSOVER_HZ,
+    high_crossover=STEM_HIGH_CROSSOVER_HZ,
+):
+    """Create complementary LOW/MID/HIGH stems without changing the master."""
+    audio = np.asarray(output, dtype=np.float32)
+    if audio.ndim not in (1, 2):
+        raise ValueError("Frequency stems require mono or stereo audio.")
+    nyquist = TARGET_SR / 2.0
+    low_crossover = float(low_crossover)
+    high_crossover = float(high_crossover)
+    if not 0.0 < low_crossover < high_crossover < nyquist:
+        raise ValueError("Stem crossovers must be ordered and below Nyquist.")
+
+    channels = audio[:, None] if audio.ndim == 1 else audio
+    low = np.empty_like(channels)
+    below_high = np.empty_like(channels)
+    for channel in range(channels.shape[1]):
+        low[:, channel] = butter_filter(
+            channels[:, channel], "lowpass", low_crossover
+        )
+        below_high[:, channel] = butter_filter(
+            channels[:, channel], "lowpass", high_crossover
+        )
+    mid = below_high - low
+    high = channels - below_high
+    if audio.ndim == 1:
+        return low[:, 0], mid[:, 0], high[:, 0]
+    return low, mid, high
+
+
+def save_frequency_stems(output, outfile, current_file):
+    """Save remix-ready complementary stems; the master files remain untouched."""
+    low, mid, high = split_frequency_stems(output)
+    timestamp_base = os.path.splitext(outfile)[0]
+    current_base = os.path.splitext(current_file)[0]
+    timestamped = {}
+    current = {}
+    for label, audio in (("LOW", low), ("MID", mid), ("HIGH", high)):
+        timestamped_path = f"{timestamp_base}_{label}.wav"
+        current_path = f"{current_base}_{label}.wav"
+        # Float WAV preserves headroom and lets the three stems reconstruct the master.
+        sf.write(timestamped_path, audio, TARGET_SR, subtype="FLOAT")
+        sf.write(current_path, audio, TARGET_SR, subtype="FLOAT")
+        timestamped[label.lower()] = timestamped_path
+        current[label.lower()] = current_path
+    return {
+        "low_crossover_hz": STEM_LOW_CROSSOVER_HZ,
+        "high_crossover_hz": STEM_HIGH_CROSSOVER_HZ,
+        "format": "32-bit float WAV",
+        "timestamped": timestamped,
+        "current": current,
+    }
 
 
 def clean_band(x, low=35, high=12000):
@@ -3338,6 +3398,7 @@ def generate_soundscape(dream_level):
 
     current_file = os.path.join(OUTPUT_FOLDER, "current.wav")
     sf.write(current_file, output, TARGET_SR)
+    frequency_stems = save_frequency_stems(output, outfile, current_file)
 
     print()
     print("Added layers:", total_added)
@@ -3379,11 +3440,15 @@ def generate_soundscape(dream_level):
         usage_counts,
         role_counts,
         temporal_metrics,
+        frequency_stems,
     )
     save_sample_learning_profile(sample_profile)
 
     print("Current:")
     print(current_file)
+    print("Frequency stems (LOW / MID / HIGH):")
+    for path in frequency_stems["timestamped"].values():
+        print(path)
     print("Render report:")
     print(render_report_path)
     print("Sample learning profile:")

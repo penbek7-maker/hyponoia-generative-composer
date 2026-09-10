@@ -58,6 +58,48 @@ def test_generator_recording_cache_reuses_loaded_wav(tmp_path, monkeypatch):
     assert info.hits == 1
 
 
+def test_frequency_stems_reconstruct_the_master_and_separate_bands():
+    sample_rate = generator.TARGET_SR
+    time = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    master = (
+        0.20 * np.sin(2 * np.pi * 80.0 * time)
+        + 0.14 * np.sin(2 * np.pi * 1000.0 * time)
+        + 0.08 * np.sin(2 * np.pi * 8000.0 * time)
+    ).astype(np.float32)
+    stereo = np.stack([master, master * 0.85], axis=1)
+
+    low, mid, high = generator.split_frequency_stems(stereo)
+
+    assert low.shape == mid.shape == high.shape == stereo.shape
+    assert np.isfinite(low).all() and np.isfinite(mid).all() and np.isfinite(high).all()
+    assert np.max(np.abs(low)) > 0
+    assert np.max(np.abs(mid)) > 0
+    assert np.max(np.abs(high)) > 0
+    assert np.allclose(low + mid + high, stereo, atol=2e-6)
+
+
+def test_frequency_stems_are_saved_for_timestamped_and_current_outputs(tmp_path):
+    samples = generator.TARGET_SR // 10
+    time = np.arange(samples, dtype=np.float32) / generator.TARGET_SR
+    master = np.stack([
+        0.2 * np.sin(2 * np.pi * 100.0 * time),
+        0.2 * np.sin(2 * np.pi * 1200.0 * time),
+    ], axis=1).astype(np.float32)
+    outfile = tmp_path / "Hyponoia_D1_test.wav"
+    current = tmp_path / "current.wav"
+
+    metadata = generator.save_frequency_stems(master, str(outfile), str(current))
+
+    paths = list(metadata["timestamped"].values()) + list(metadata["current"].values())
+    assert all((tmp_path / path.split("/")[-1]).exists() for path in paths)
+    assert metadata["low_crossover_hz"] == 250
+    assert metadata["high_crossover_hz"] == 4000
+    low, _ = sf.read(metadata["current"]["low"], dtype="float32")
+    mid, _ = sf.read(metadata["current"]["mid"], dtype="float32")
+    high, _ = sf.read(metadata["current"]["high"], dtype="float32")
+    assert np.allclose(low + mid + high, master, atol=2e-6)
+
+
 def test_dream_activity_and_bright_event_smoothing_are_ordered(monkeypatch):
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
     assert generator.dream_activity_multiplier(1) < generator.dream_activity_multiplier(3)

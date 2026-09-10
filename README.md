@@ -184,6 +184,11 @@ The latest render is also available as:
 
 `output/current.wav`
 
+Each generation also saves three remix-ready, complementary 32-bit float WAVs:
+`LOW` (below 250 Hz), `MID` (250 Hz–4 kHz), and `HIGH` (above 4 kHz).
+They can be loaded into a DAW or Max/MSP and recombined to reconstruct the unchanged
+master, or balanced separately for a new mix.
+
 ## 7. Use Hyponoia With Max/MSP
 
 Normal users open the **Live / Max** tab and press **Start live connection**.
@@ -212,6 +217,12 @@ Python sends messages back to Max/MSP on port `7402`.
 Returned OSC messages are:
 
 `/generator/path /absolute/path/to/current.wav`
+
+`/generator/path/low /absolute/path/to/current_LOW.wav`
+
+`/generator/path/mid /absolute/path/to/current_MID.wav`
+
+`/generator/path/high /absolute/path/to/current_HIGH.wav`
 
 `/generator/ready 1`
 

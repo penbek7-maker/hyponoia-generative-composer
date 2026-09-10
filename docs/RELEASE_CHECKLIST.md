@@ -2,7 +2,7 @@
 
 ## Automated gate
 
-- [x] Complete Python test suite: 186 passed
+- [x] Complete Python test suite: 190 passed
 - [x] Release ZIP excludes personal audio and learning data
 - [x] Release ZIP excludes developer-only dependencies and utilities
 - [x] Contextual Greek/English feedback has a labelled fallback
@@ -13,6 +13,7 @@
 - [x] Add genuinely new WAVs and confirm that new embeddings are created
 - [x] Remove a WAV and confirm that inactive objects/embeddings are pruned
 - [x] Isolate composition-wide output learning and confirm that it changes the next same-seed render
+- [x] Confirm that every master produces complementary LOW/MID/HIGH WAVs without changing the master
 - [ ] Generate and listen to D1, D3 and D5
 - [ ] Apply ratings and a free comment, then generate again
 - [ ] Close and reopen Hyponoia and confirm that personal learning persists

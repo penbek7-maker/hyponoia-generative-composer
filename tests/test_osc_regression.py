@@ -63,3 +63,42 @@ def test_render_sends_path_before_ready_to_prevent_max_preload_race(monkeypatch)
     assert addresses.index("/generator/path") < addresses.index("/generator/ready")
     assert messages[0] == ("/generator/busy", 1)
     assert messages[-1] == ("/generator/busy", 0)
+
+
+def test_latest_wav_prefers_master_and_never_selects_a_frequency_stem(tmp_path, monkeypatch):
+    timestamped = tmp_path / "Hyponoia_D1_test.wav"
+    high = tmp_path / "Hyponoia_D1_test_HIGH.wav"
+    timestamped.write_bytes(b"master")
+    high.write_bytes(b"stem")
+    monkeypatch.setattr(generator_receiver, "OUTPUT_FOLDER", str(tmp_path))
+    assert generator_receiver.latest_wav() == str(timestamped)
+
+    current = tmp_path / "current.wav"
+    current.write_bytes(b"current master")
+    assert generator_receiver.latest_wav() == str(current)
+
+
+def test_render_announces_available_frequency_stems_before_ready(monkeypatch):
+    messages = []
+
+    class FakeClient:
+        def send_message(self, address, value):
+            messages.append((address, value))
+
+    monkeypatch.setattr(generator_receiver, "client", FakeClient())
+    monkeypatch.setattr(
+        generator_receiver.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(generator_receiver, "latest_wav", lambda: "/tmp/current.wav")
+    monkeypatch.setattr(generator_receiver.os.path, "exists", lambda path: True)
+    generator_receiver._run_render(
+        "D5",
+        {"root": 0, "scale": "minor", "confidence": 0.8},
+    )
+
+    addresses = [address for address, _ in messages]
+    for address in ("/generator/path/low", "/generator/path/mid", "/generator/path/high"):
+        assert address in addresses
+        assert addresses.index(address) < addresses.index("/generator/ready")

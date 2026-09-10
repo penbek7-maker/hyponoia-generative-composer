@@ -31,10 +31,24 @@ HARMONY_STATE = {
 
 
 def latest_wav():
-    wavs = glob.glob(os.path.join(OUTPUT_FOLDER, "*.wav"))
+    current = os.path.join(OUTPUT_FOLDER, "current.wav")
+    if os.path.exists(current):
+        return current
+    wavs = [
+        path for path in glob.glob(os.path.join(OUTPUT_FOLDER, "*.wav"))
+        if not os.path.splitext(path)[0].endswith(("_LOW", "_MID", "_HIGH"))
+    ]
     if not wavs:
         return None
     return max(wavs, key=os.path.getmtime)
+
+
+def frequency_stem_paths(master_path):
+    base = os.path.splitext(master_path)[0]
+    return {
+        label.lower(): f"{base}_{label}.wav"
+        for label in ("LOW", "MID", "HIGH")
+    }
 
 
 def root_handler(address, root):
@@ -106,6 +120,9 @@ def _run_render(dream_depth, harmony_state):
             # Max must receive and preload the concrete path before it receives
             # the ready trigger. This ordering prevents a local UDP race.
             client.send_message("/generator/path", abs_path)
+            for label, stem_path in frequency_stem_paths(abs_path).items():
+                if os.path.exists(stem_path):
+                    client.send_message(f"/generator/path/{label}", stem_path)
             client.send_message("/generator/ready", 1)
         else:
             print("No WAV found after generation.")

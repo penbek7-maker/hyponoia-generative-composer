@@ -414,7 +414,11 @@ class HyponoiaApp:
                 f"{self.level.get()} is ready in {self.root_note.get()} {self.scale.get()}. "
                 "Listen, then tell Hyponoia what should stay and what should change."
             )
-            messagebox.showinfo("Hyponoia", "Your composition is ready. Press ‘Listen’.")
+            messagebox.showinfo(
+                "Hyponoia",
+                "Your composition is ready. ‘Listen’ opens the unchanged master. "
+                "The Output folder also contains LOW, MID and HIGH WAVs for remixing."
+            )
         else:
             self.render_status.set("The composition could not be created. Open the technical details below.")
             if not self.render_log_visible:
