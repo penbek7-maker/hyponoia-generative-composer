@@ -2137,6 +2137,15 @@ def repair_isolated_discontinuities(audio, threshold=0.075, ratio=9.0):
     return work[:, 0] if mono_input else work
 
 
+def enforce_delivery_ceiling(output, ceiling=0.88):
+    """Keep the final repaired waveform below the delivery peak ceiling."""
+    work = np.asarray(output, dtype=np.float32).copy()
+    peak = float(np.max(np.abs(work))) if work.size else 0.0
+    if peak > float(ceiling):
+        work *= float(ceiling) / peak
+    return work
+
+
 def final_mix(output, dream_level):
     # Global ambience/resonance polish. Kept subtle: musical glue, not soup.
     length = len(output)
@@ -2182,6 +2191,9 @@ def final_mix(output, dream_level):
     # A seam that was quiet before normalisation can become audible after the
     # final gain and form envelope, so verify delivery-level samples once more.
     output = repair_isolated_discontinuities(output, threshold=0.06, ratio=8.0)
+    # Interpolation can overshoot the earlier normalisation by a few samples.
+    # Re-apply the ceiling after repair so exported PCM stays below full scale.
+    output = enforce_delivery_ceiling(output)
 
     return output.astype(np.float32)
 

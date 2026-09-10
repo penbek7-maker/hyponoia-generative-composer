@@ -578,6 +578,14 @@ def test_declick_repairs_an_isolated_step_but_preserves_bright_oscillation():
     assert np.allclose(untouched, bright)
 
 
+def test_delivery_ceiling_prevents_post_repair_full_scale_samples():
+    output = np.array([[0.25, -0.25], [1.04, -0.96], [0.40, -0.40]], dtype=np.float32)
+    limited = generator.enforce_delivery_ceiling(output)
+    assert limited.shape == output.shape
+    assert np.max(np.abs(limited)) <= 0.880001
+    assert np.allclose(generator.enforce_delivery_ceiling(output * 0.5), output * 0.5)
+
+
 def test_density_glue_makes_d5_fullest_without_changing_shape(monkeypatch):
     learned = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     learned["richness_weight"] = 1.12
