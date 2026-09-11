@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 
-DEFAULT_VERSION = "2.0.0-rc2"
+DEFAULT_VERSION = "2.0.0-rc3"
 RUNTIME_JSON = {"alpha_profile.json", "representation_config.json", "library_source_labels.json"}
 RUNTIME_REQUIREMENTS = {
     "requirements.txt",
@@ -58,7 +58,11 @@ def is_engine_source(relative: Path) -> bool:
             or relative.name in RUNTIME_REQUIREMENTS
             or relative.name in RUNTIME_JSON
         )
-    return relative.parts[0] == "phase2_artifacts" or relative == Path("alpha_memory/.gitkeep")
+    return (
+        relative.parts[0] == "phase2_artifacts"
+        or relative == Path("alpha_memory/.gitkeep")
+        or relative == Path("assets/hyponoia_python_bg.png")
+    )
 
 
 def tracked_paths(source: Path) -> list[Path]:

@@ -73,11 +73,7 @@ class HyponoiaApp:
     def _build(self) -> None:
         frame = ttk.Frame(self.root, padding=22)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Hyponoia", font=("Helvetica", 30, "bold")).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text="Your sounds → Your composition → Your feedback → A new composition",
-        ).pack(anchor="w", pady=(2, 12))
+        self._build_header(frame)
         status_box = ttk.LabelFrame(frame, text="Hyponoia status", padding=(12, 8))
         status_box.pack(fill="x")
         ttk.Label(status_box, textvariable=self.status, justify="left").pack(anchor="w")
@@ -98,6 +94,48 @@ class HyponoiaApp:
         self._build_composer(compose_tab)
         self._build_feedback(feedback_tab)
         self._build_live(live_tab)
+
+    def _build_header(self, frame: ttk.Frame) -> None:
+        header = tk.Canvas(
+            frame,
+            height=126,
+            background="#202020",
+            highlightthickness=1,
+            highlightbackground="#4d385f",
+            borderwidth=0,
+        )
+        header.pack(fill="x", pady=(0, 12))
+        self.header_image = None
+        image_path = PROJECT_DIR / "assets" / "hyponoia_python_bg.png"
+        try:
+            self.header_image = tk.PhotoImage(file=str(image_path))
+            header.create_image(0, 0, image=self.header_image, anchor="nw")
+        except tk.TclError:
+            pass
+        header.create_text(
+            33,
+            25,
+            text="Hyponoia",
+            anchor="nw",
+            fill="#111111",
+            font=("Helvetica", 31, "bold"),
+        )
+        header.create_text(
+            30,
+            22,
+            text="Hyponoia",
+            anchor="nw",
+            fill="#f2f2f2",
+            font=("Helvetica", 31, "bold"),
+        )
+        header.create_text(
+            31,
+            81,
+            text="Your sounds → Your composition → Your feedback → A new composition",
+            anchor="nw",
+            fill="#d0d0d0",
+            font=("Helvetica", 13),
+        )
 
     def _build_library(self, tab: ttk.Frame) -> None:
         ttk.Label(
