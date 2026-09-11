@@ -21,6 +21,7 @@ from hyponoia_stability import (
     utc_timestamp,
 )
 from composition_preference_v1 import CompositionPreferenceAssist
+from artist_style_v1 import ArtistStyleAssist
 from library_coverage_v1 import (
     recording_coverage_factor,
     sync_recording_coverage,
@@ -59,7 +60,7 @@ SAMPLE_LEARNING_FILE = os.environ.get(
 )
 RENDER_REPORT_FILE = os.environ.get("HYPNOIA_RENDER_REPORT_FILE", "render_report.json")
 RENDER_REPORT_FOLDER = os.environ.get("HYPNOIA_RENDER_REPORT_FOLDER", "render_reports")
-GENERATOR_REVISION = "2026-09-08-declick-evolution-12"
+GENERATOR_REVISION = "2026-09-11-anchor-morphology-learned-pan-24"
 REPRESENTATION_CONFIG_FILE = os.environ.get(
     "HYPNOIA_REPRESENTATION_CONFIG",
     USER_PATHS.get("representation_config", "representation_config.json"),
@@ -74,6 +75,14 @@ COMPOSITION_PREFERENCE_FILE = os.environ.get(
     ),
 )
 COMPOSITION_PREFERENCE = CompositionPreferenceAssist.disabled()
+ARTIST_STYLE_FILE = os.environ.get(
+    "HYPNOIA_ARTIST_STYLE_PROFILE",
+    USER_PATHS.get(
+        "artist_style_profile",
+        "phase2_artifacts/artist_style_baseline_v1.json",
+    ),
+)
+ARTIST_STYLE = ArtistStyleAssist.disabled()
 CURRENT_LIBRARY_COVERAGE_SNAPSHOT = {}
 LEARNED_SYNTH_AFFINITY = {}
 ORIGIN_LEARNING_SNAPSHOT = {
@@ -198,6 +207,34 @@ def effective_synthetic_score(obj):
         # is strong enough to generalise the listener's confirmed examples.
         return float(np.clip(0.45 * estimated + 0.55 * inferred, 0.05, 0.95))
     return estimated
+
+
+def fragile_air_object(obj):
+    """Detect near-silent ultrasonic/noise slices unsuitable as long beds.
+
+    This is not a high-frequency ban. Bright material remains eligible; only
+    the conjunction of extremely low source energy, very high centroid, dense
+    zero crossings and low musicality marks a slice as fragile air.
+    """
+    features = obj.get("features", {})
+    return bool(
+        float(features.get("energy", 1.0) or 0.0) < 0.00020
+        and float(features.get("brightness", 0.0) or 0.0) > 8500.0
+        and float(features.get("zero_crossing_rate", 0.0) or 0.0) > 0.22
+        and float(features.get("musicality", 1.0) or 0.0) < 0.30
+    )
+
+
+def bound_fragile_air_punctuation(frag, obj, dream_level):
+    """Keep fragile air as a short event instead of an amplified constant bed."""
+    source = np.asarray(frag, dtype=np.float32)
+    if not fragile_air_object(obj):
+        return source
+    maximum = int({1: 3.2, 3: 4.4, 5: 5.8}[int(dream_level)] * TARGET_SR)
+    if len(source) > maximum:
+        start = max(0, (len(source) - maximum) // 2)
+        source = source[start : start + maximum].copy()
+    return fade(source, sec=min(0.55, len(source) / TARGET_SR * 0.18))
 
 D5_REFERENCE_TARGETS = {
     "pulse_bpm_range": [122.0, 129.0],
@@ -467,6 +504,29 @@ def apply_mix_feedback_controls(output):
     return processed.astype(np.float32)
 
 
+def adaptive_low_balance(output, dream_level, crossover=250.0):
+    """Tame only severe bass dominance while preserving intentional low material.
+
+    The control is inactive for already balanced renders. It never creates or
+    removes high-frequency content and does not impose a fixed tonal profile.
+    """
+    source = np.asarray(output, dtype=np.float32)
+    if source.ndim != 2 or source.shape[1] != 2 or len(source) < 64:
+        return source.copy()
+    result = source.copy()
+    ratio_target = {1: 0.92, 3: 1.05, 5: 1.35}[int(dream_level)]
+    for channel in range(2):
+        low = butter_filter(source[:, channel], "lowpass", crossover)
+        remainder = source[:, channel] - low
+        low_rms = float(np.sqrt(np.mean(low * low)))
+        remainder_rms = float(np.sqrt(np.mean(remainder * remainder))) + 1e-9
+        ratio = low_rms / remainder_rms
+        if ratio > ratio_target:
+            scale = max(0.08, ratio_target / ratio)
+            result[:, channel] = remainder + low * scale
+    return result.astype(np.float32)
+
+
 def dream_activity_multiplier(dream_level):
     """Keep D-level activity audibly ordered without turning D5 into clutter."""
     base = {1: 0.96, 3: 1.04, 5: 1.10}[dream_level]
@@ -618,15 +678,16 @@ def d5_continuity_start(start, duration, role, previous_role_end, dream_level, p
 
 
 def form_density_multiplier(section_name, dream_level):
-    """Create one of three audibly different D5 energy arcs per render."""
-    if dream_level != 5:
-        return 1.0
+    """Create a render-specific energy arc without abandoning learned density."""
     variant = D5_FORM_VARIANTS.get(CURRENT_FORM_VARIANT, {})
     base = float(variant.get(section_name, 1.0))
-    drive = d5_energy_drive(dream_level)
+    # D1/D3 keep the accepted structure closer to neutral. D5 is allowed the
+    # largest formal contrast, but no level is forced through the same arc on
+    # every render.
+    drive = d5_energy_drive(dream_level) if dream_level == 5 else {1: 0.46, 3: 0.68}[dream_level]
     if base >= 1.0:
         return 1.0 + (base - 1.0) * drive
-    return base
+    return 1.0 - (1.0 - base) * drive
 
 
 def d5_selection_character_factor(obj, dream_level):
@@ -1003,6 +1064,8 @@ def save_render_report(
     role_counts,
     temporal_metrics=None,
     frequency_stems=None,
+    event_timeline=None,
+    source_development=None,
 ):
     os.makedirs(RENDER_REPORT_FOLDER, exist_ok=True)
     report = {
@@ -1014,15 +1077,17 @@ def save_render_report(
         "dream_level": int(dream_level),
         "form_variant": CURRENT_FORM_VARIANT,
         "background_design": {
-            1: "accepted_d1_resonant_bed",
-            3: "spectral_halo",
-            5: "pulsed_harmonic_current",
+            1: "source_bed_drone_pad_and_musical_phrases",
+            3: "source_bed_drone_pad_phrases_and_spectral_halo",
+            5: "source_bed_drone_pad_and_pulsed_source_phrases",
         }[int(dream_level)],
         "harmony_state": dict(HARMONY_STATE),
         "total_sample_selections": int(sum(usage_by_sample.values())),
         "unique_samples": int(len(usage_by_sample)),
         "samples": dict(sorted(usage_by_sample.items())),
         "sample_usage_details": dict(sorted(usage_details.items())),
+        "event_timeline": event_timeline or [],
+        "source_development": source_development or {},
         "recordings": dict(sorted(usage_by_recording.items())),
         "role_counts": role_counts,
         "control_snapshot": dict(LEARNING_WEIGHTS),
@@ -1279,12 +1344,67 @@ D5_FORM_VARIANTS = {
 }
 
 
+FORM_TIMING_VARIANTS = {
+    "aesthetic_bridge": (
+        ("opening", 0.00, 0.19, 0.65),
+        ("activation", 0.13, 0.37, 1.05),
+        ("complexity", 0.29, 0.59, 1.45),
+        ("memory", 0.50, 0.79, 1.05),
+        ("resolution", 0.69, 0.99, 0.75),
+    ),
+    "central_surge": (
+        ("opening", 0.00, 0.16, 0.62),
+        ("activation", 0.10, 0.34, 1.10),
+        ("complexity", 0.25, 0.66, 1.50),
+        ("memory", 0.58, 0.82, 0.98),
+        ("resolution", 0.73, 0.99, 0.70),
+    ),
+    "double_wave": (
+        ("opening", 0.00, 0.17, 0.60),
+        ("activation", 0.10, 0.31, 1.23),
+        ("complexity", 0.25, 0.55, 1.28),
+        ("memory", 0.47, 0.83, 1.20),
+        ("resolution", 0.75, 0.99, 0.68),
+    ),
+    "late_bloom": (
+        ("opening", 0.00, 0.22, 0.58),
+        ("activation", 0.15, 0.40, 0.94),
+        ("complexity", 0.33, 0.66, 1.30),
+        ("memory", 0.56, 0.88, 1.30),
+        ("resolution", 0.79, 0.99, 0.66),
+    ),
+}
+
+
+def select_form_variant(dream_level, seed=None):
+    """Select a reproducible form while keeping D1/D3/D5 structurally distinct."""
+    names = tuple(FORM_TIMING_VARIANTS)
+    seed = int(RENDER_SEED if seed is None else seed)
+    level_offset = {1: 0, 3: 1, 5: 2}[int(dream_level)]
+    return names[((seed // 997) + level_offset) % len(names)]
+
+
+def composed_form(dream_level, duration=None, seed=None):
+    """Scale the selected learned-compatible form to the current render duration."""
+    duration = float(OUTPUT_DURATION if duration is None else duration)
+    variant = select_form_variant(dream_level, seed=seed)
+    return [
+        (name, start * duration, end * duration, density)
+        for name, start, end, density in FORM_TIMING_VARIANTS[variant]
+    ]
+
+
 def planned_form_items(form, dream_level):
     """Allocate density from the learned positive whole-render structure."""
     raw_items = []
-    for section_name, _section_start, _section_end, density in form:
+    for section_name, section_start, section_end, density in form:
         adjusted = density * learned_factor("richness_weight", 3.2, 0.78, 1.25)
         adjusted *= form_density_multiplier(section_name, dream_level)
+        adjusted *= ARTIST_STYLE.form_factor(
+            ((section_start + section_end) * 0.5) / max(1.0, OUTPUT_DURATION),
+            dream_level,
+            RENDER_SEED,
+        )
         if dream_level == 5 and section_name == "complexity":
             adjusted *= 1.34
         elif dream_level == 3 and section_name == "complexity":
@@ -1580,6 +1700,10 @@ def choose_weighted(objects, profile, dream_level, previous=None, desired_role=N
         score *= COMPOSITION_PREFERENCE.object_factor(
             obj.get("object_id"), obj.get("recording"), dream_level
         )
+        score *= ARTIST_STYLE.object_factor(
+            REPRESENTATION_ASSIST.embeddings.get(str(obj.get("object_id", ""))),
+            dream_level,
+        )
         score *= composition_duration_selection_factor(obj, desired_role, dream_level)
 
         # The D5 preference controls must make an audible selection difference,
@@ -1831,212 +1955,640 @@ def add_to_output(output, mono, start_sec, amp, pan):
     output[start:start + len(stereo)] += stereo
 
 
-def arpeggio_frequencies(dream_level):
-    """Return a level-specific pitch collection without imposing tonality."""
-    count = {1: 4, 3: 6, 5: 8}[dream_level]
-    tuned = scale_frequencies(low_midi=48, high_midi=78, count=count)
-    if tuned is not None:
-        return tuned
-    free_midi = {
-        1: (48, 55, 60, 64),
-        3: (50, 55, 59, 62, 67, 72),
-        5: (48, 51, 55, 58, 62, 65, 69, 72),
-    }
-    return [midi_to_hz(note) for note in free_midi[dream_level]]
-
-
 def arpeggio_phrase_growth(dream_level, progress):
-    """Let synth phrases emerge gradually instead of arriving at full level."""
+    """Let source-derived musical phrases emerge gradually."""
     progress = max(0.0, min(1.0, float(progress)))
     floor = {1: 0.72, 3: 0.60, 5: 0.46}[dream_level]
     return float(floor + (1.0 - floor) * progress ** 0.72)
 
 
-def synth_arpeggio_layer(dream_level, pulse_bpm=0.0, duration=None):
-    """Build a bounded phrase-based arpeggio requested by human feedback."""
-    duration = OUTPUT_DURATION if duration is None else max(0.0, float(duration))
-    length = int(duration * TARGET_SR)
-    layer = np.zeros((length, 2), dtype=np.float32)
-    gain = composition_feedback_audio_snapshot()["arpeggio_layer_gain"]
-    if gain <= 1e-6 or length < 32:
+def phrase_window_envelope(length, dream_level, voice_index=0, seed=None):
+    """Create long, smooth phrase windows with audible space between them."""
+    length = max(0, int(length))
+    if length == 0:
+        return np.zeros(0, dtype=np.float32)
+    rng = random.Random(
+        int(RENDER_SEED if seed is None else seed)
+        + int(dream_level) * 49979687
+        + int(voice_index) * 67867967
+    )
+    phrase_count = {1: 5, 3: 6, 5: 7}[dream_level]
+    duration = length / TARGET_SR
+    envelope = np.zeros(length, dtype=np.float32)
+    anchors = np.linspace(0.16, 0.84, phrase_count)
+    for phrase_index, anchor in enumerate(anchors):
+        centre = float(anchor) + rng.uniform(-0.045, 0.045)
+        width = {
+            1: rng.uniform(0.23, 0.34),
+            3: rng.uniform(0.19, 0.29),
+            5: rng.uniform(0.15, 0.25),
+        }[dream_level]
+        # Adjacent voices breathe at different points instead of forming one
+        # permanent oscillator stack.
+        centre += ((voice_index + phrase_index) % 3 - 1) * 0.018
+        start = max(0, int((centre - width / 2.0) * duration * TARGET_SR))
+        end = min(length, int((centre + width / 2.0) * duration * TARGET_SR))
+        if end - start < 16:
+            continue
+        window = np.clip(
+            np.sin(np.linspace(0.0, np.pi, end - start, dtype=np.float32)),
+            0.0,
+            1.0,
+        ) ** 1.55
+        envelope[start:end] = np.maximum(envelope[start:end], window)
+    return envelope
+
+
+def learned_bed_phrase_envelope(length, dream_level, seed=None):
+    """Create finite background phrases from the learned whole-work curves.
+
+    A continuous granular bed can sound like an editor placed a loop behind the
+    composition even when its grains change. This envelope finds a small number
+    of salient regions in the learned energy/density trajectories and gives each
+    one an asymmetric arrival, body and release. The material therefore returns
+    with memory, develops, and completes before the next phrase takes over.
+    """
+    length = max(0, int(length))
+    if length == 0:
+        return np.zeros(0, dtype=np.float32)
+    grid_size = 257
+    positions = np.linspace(0.0, 1.0, grid_size, dtype=np.float64)
+    local_seed = int(RENDER_SEED if seed is None else seed) + int(dream_level) * 433494437
+    energy = ARTIST_STYLE.trajectory_curve("energy", positions, dream_level, local_seed)
+    density = ARTIST_STYLE.trajectory_curve("density", positions, dream_level, local_seed)
+    salience = 0.58 * np.clip(energy, 0.0, 1.0) + 0.42 * np.clip(density, 0.0, 1.0)
+
+    phrase_count = {1: 4, 3: 5, 5: 6}[dream_level]
+    candidates = [
+        index
+        for index in range(2, grid_size - 2)
+        if salience[index] >= salience[index - 1]
+        and salience[index] >= salience[index + 1]
+    ]
+    candidates.sort(key=lambda index: float(salience[index]), reverse=True)
+    min_spacing = grid_size / (phrase_count + 1) * 0.56
+    selected = []
+    for index in candidates:
+        if all(abs(index - other) >= min_spacing for other in selected):
+            selected.append(index)
+        if len(selected) >= phrase_count:
+            break
+    # Flat trajectories still receive a finite phrase form, but the centres are
+    # spaced once across the composition rather than cycled as a periodic LFO.
+    fallback = np.linspace(0.12, 0.88, phrase_count)
+    for position in fallback:
+        index = int(round(position * (grid_size - 1)))
+        if all(abs(index - other) >= min_spacing * 0.72 for other in selected):
+            selected.append(index)
+        if len(selected) >= phrase_count:
+            break
+    selected = sorted(selected[:phrase_count])
+
+    envelope = np.zeros(length, dtype=np.float32)
+    for phrase_index, grid_index in enumerate(selected):
+        centre = grid_index / (grid_size - 1)
+        local_density = float(np.clip(density[grid_index], 0.0, 1.0))
+        width = {1: 0.205, 3: 0.175, 5: 0.150}[dream_level]
+        width *= 0.82 + 0.36 * local_density
+        start = max(0, int((centre - width * 0.48) * length))
+        end = min(length, int((centre + width * 0.52) * length))
+        size = end - start
+        if size < 32:
+            continue
+        attack_n = max(8, int(size * {1: 0.30, 3: 0.26, 5: 0.22}[dream_level]))
+        release_n = max(8, int(size * {1: 0.43, 3: 0.46, 5: 0.49}[dream_level]))
+        body_n = max(0, size - attack_n - release_n)
+        attack = np.sin(np.linspace(0.0, np.pi / 2.0, attack_n, dtype=np.float32)) ** 1.35
+        body = np.ones(body_n, dtype=np.float32)
+        release = np.clip(
+            np.cos(np.linspace(0.0, np.pi / 2.0, release_n, dtype=np.float32)),
+            0.0,
+            1.0,
+        ) ** 1.55
+        phrase = np.concatenate((attack, body, release))[:size]
+        phrase_gain = 0.72 + 0.28 * float(np.clip(salience[grid_index], 0.0, 1.0))
+        # Later D3/D5 phrases can answer earlier ones more confidently, without
+        # forcing a simple linear crescendo on every render.
+        if phrase_index and dream_level >= 3:
+            phrase_gain *= 1.0 + min(0.12, 0.025 * phrase_index)
+        envelope[start:end] = np.maximum(envelope[start:end], phrase * phrase_gain)
+    envelope[0] = 0.0
+    envelope[-1] = 0.0
+    return envelope.astype(np.float32)
+
+
+def source_musical_phrase_layer(source, dream_level, pulse_bpm=0.0, duration=None, seed=None):
+    """Compose evolving foreground phrases by re-sampling the selected material.
+
+    No oscillator is used. A motif is cut from an active region of the current
+    source mix, then repeated with scale-related resampling, granular variation,
+    overlap and long windows. This preserves the library's timbral identity while
+    still producing recognisable musical phrasing and development.
+    """
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim != 2 or audio.shape[1] != 2:
+        raise ValueError("Source musical phrases require stereo audio.")
+    requested_length = len(audio) if duration is None else int(max(0.0, float(duration)) * TARGET_SR)
+    length = min(len(audio), requested_length)
+    layer = np.zeros((requested_length, 2), dtype=np.float32)
+    feedback = composition_feedback_audio_snapshot()
+    gain = feedback["synthetic_layer_gain"] + 0.72 * feedback["arpeggio_layer_gain"]
+    gain *= np.sqrt(feedback["foreground_presence_gain"])
+    if gain <= 1e-6 or length < 512:
         return layer
 
-    bpm = {1: 76.0, 3: 96.0, 5: float(pulse_bpm) if pulse_bpm > 0 else 126.0}[dream_level]
-    subdivision = {1: 1.0, 3: 0.5, 5: 0.5}[dream_level]
-    step_sec = (60.0 / bpm) * subdivision
-    note_sec = min(1.15, max(0.18, step_sec * {1: 1.18, 3: 1.05, 5: 0.88}[dream_level]))
-    phrase_steps = {1: 4, 3: 8, 5: 12}[dream_level]
-    rest_steps = {1: 2, 3: 2, 5: 1}[dream_level]
-    pattern_banks = {
-        1: (
-            (0, 2, 1, 3),
-            (0, 1, 3, 2),
-            (2, 0, 3, 1),
-        ),
-        3: (
-            (0, 2, 4, 1, 3, 5, 4, 2),
-            (0, 3, 1, 4, 2, 5, 3, 1),
-            (4, 2, 0, 1, 5, 3, 1, 2),
-        ),
-        5: (
-            (0, 2, 4, 6, 3, 5, 7, 4, 6, 2, 5, 1),
-            (0, 3, 6, 2, 5, 1, 7, 4, 2, 6, 3, 5),
-            (5, 2, 7, 3, 0, 4, 1, 6, 3, 7, 2, 4),
-        ),
+    working = audio[:length]
+    mono = np.mean(working, axis=1)
+    analysis_size = min(length, max(512, int(0.80 * TARGET_SR)))
+    analysis_hop = max(128, int(0.24 * TARGET_SR))
+    positions = []
+    energies = []
+    for start in range(0, max(1, length - analysis_size + 1), analysis_hop):
+        positions.append(start)
+        energies.append(float(np.sqrt(np.mean(mono[start:start + analysis_size] ** 2))))
+    positive = [value for value in energies if value > 1e-8]
+    if not positive:
+        return layer
+    floor = float(np.percentile(positive, 55.0))
+    active_positions = [
+        start for start, energy in zip(positions, energies) if energy >= floor
+    ] or positions
+
+    rng = random.Random(
+        int(RENDER_SEED if seed is None else seed) + int(dream_level) * 104729
+    )
+    bpm = {
+        1: 118.0,
+        3: 146.0,
+        5: max(158.0, float(pulse_bpm)) if pulse_bpm > 0 else 174.0,
+    }[dream_level]
+    step_sec = (60.0 / bpm) * {1: 0.60, 3: 0.46, 5: 0.34}[dream_level]
+    # Phrase density rises clearly across the dream levels, but it remains a
+    # finite formal layer rather than a continuous sequencer running everywhere.
+    phrase_count = {1: 8, 3: 10, 5: 12}[dream_level]
+    phrase_steps = {1: 10, 3: 12, 5: 14}[dream_level]
+    interval_pool = list(SCALE_INTERVALS.get(HARMONY_STATE["scale"], (0, 3, 5, 7, 10)))
+    if HARMONY_STATE["scale"] == "free" or HARMONY_STATE["confidence"] < 0.55:
+        interval_pool = [0, 2, 3, 5, 7, 10]
+    interval_patterns = {
+        1: (0, 2, 1, 3, 0),
+        3: (0, 2, 4, 1, 3, 5, 2),
+        5: (0, 2, 4, 6, 3, 5, 1, 6, 4, 2),
     }
-    frequencies = arpeggio_frequencies(dream_level)
-    rng = random.Random(RENDER_SEED + dream_level * 104729)
-    pattern = rng.choice(pattern_banks[dream_level])
-    timbre_variant = rng.randrange(3)
-    start_sec = {1: 18.0, 3: 13.0, 5: 9.0}[dream_level]
-    end_sec = max(start_sec, duration - {1: 18.0, 3: 12.0, 5: 10.0}[dream_level])
-    note_index = 0
-    level_amp = {1: 0.020, 3: 0.023, 5: 0.026}[dream_level] * gain
+    pattern = interval_patterns[dream_level]
+    anchors = np.linspace(0.13, 0.84, phrase_count)
+    expressive = ARTIST_STYLE.control("expressive_drive", dream_level)
+    base_amp = {1: 0.50, 3: 0.60, 5: 0.70}[dream_level] * gain * expressive
 
-    while start_sec < end_sec:
-        pitch_index = pattern[note_index % len(pattern)] % len(frequencies)
-        freq = frequencies[pitch_index]
-        phase = rng.random() * np.pi * 2.0
-        samples = max(16, int(note_sec * TARGET_SR))
-        t = np.arange(samples, dtype=np.float32) / TARGET_SR
-        envelope_phase = np.sin(
-            np.linspace(0.0, np.pi, samples, dtype=np.float32)
+    # A small recurring motif family gives the listener something to remember.
+    # Later phrases revisit and develop these fragments instead of introducing
+    # one unrelated event after another and immediately dropping it.
+    motif_bank = []
+    motif_bank_size = {1: 4, 3: 5, 5: 6}[dream_level]
+    for _ in range(motif_bank_size):
+        motif_sec = rng.uniform(
+            1.90 if dream_level == 1 else 1.35,
+            3.40 if dream_level == 1 else (2.80 if dream_level == 3 else 2.25),
         )
-        envelope = np.clip(envelope_phase, 0.0, 1.0) ** 1.7
-        carrier = 2 * np.pi * freq * t + phase
-        if timbre_variant == 0:
-            tone = np.sin(carrier)
-            tone += 0.22 * np.sin(2 * carrier + phase * 0.31)
-            tone += 0.07 * np.sin(3 * carrier + phase * 0.13)
-        elif timbre_variant == 1:
-            tone = np.sin(carrier + 0.24 * np.sin(carrier * 0.5 + phase * 0.37))
-            tone += 0.12 * np.sin(3 * carrier + phase * 0.19)
-        else:
-            tone = 0.82 * np.sin(carrier)
-            tone += 0.16 * np.sin(carrier * 1.5 + phase * 0.43)
-            tone += 0.09 * np.sin(carrier * 2.5 + phase * 0.17)
-        growth = arpeggio_phrase_growth(
-            dream_level, start_sec / max(end_sec, 1e-6)
+        motif_size = min(length, max(512, int(motif_sec * TARGET_SR)))
+        possible = [start for start in active_positions if start + motif_size <= length]
+        motif_start = rng.choice(possible or [max(0, length - motif_size)])
+        motif_bank.append(working[motif_start:motif_start + motif_size].copy())
+
+    for phrase_index, anchor in enumerate(anchors):
+        phrase_start = max(0.0, (float(anchor) + rng.uniform(-0.035, 0.035)) * (length / TARGET_SR))
+        motif = motif_bank[phrase_index % len(motif_bank)]
+        phrase_position = phrase_index / max(1, phrase_count - 1)
+        learned_density = float(
+            ARTIST_STYLE.trajectory_curve(
+                "density", np.asarray([phrase_position]), dream_level, int(RENDER_SEED)
+            )[0]
         )
-        tone *= envelope * level_amp * growth
-        pan = max(-0.72, min(0.72, -0.55 + 1.10 * (pitch_index / max(1, len(frequencies) - 1))))
-        add_to_output(layer, tone.astype(np.float32), start_sec, 1.0, pan)
+        learned_energy = float(
+            ARTIST_STYLE.trajectory_curve(
+                "energy", np.asarray([phrase_position]), dream_level, int(RENDER_SEED)
+            )[0]
+        )
+        local_step_sec = step_sec * (1.24 - 0.48 * np.clip(learned_density, 0.0, 1.0))
 
-        note_index += 1
-        start_sec += step_sec
-        if note_index % phrase_steps == 0:
-            start_sec += rest_steps * step_sec
+        for step in range(phrase_steps):
+            degree = pattern[(step + phrase_index) % len(pattern)] % len(interval_pool)
+            tonal_position = (phrase_index + step / max(1, phrase_steps)) / max(1, phrase_count)
+            learned_tonal = float(
+                ARTIST_STYLE.trajectory_curve(
+                    "tonal", np.asarray([tonal_position]), dream_level, int(RENDER_SEED)
+                )[0]
+            )
+            degree_shift = int(round(learned_tonal * {1: 1.0, 3: 2.0, 5: 3.0}[dream_level]))
+            degree = (degree + degree_shift) % len(interval_pool)
+            semitones = interval_pool[degree]
+            if (step + phrase_index) % 5 == 4:
+                semitones -= 12
+            resample_factor = float(2.0 ** (-semitones / 12.0))
+            scan = int((step / max(1, phrase_steps - 1)) * max(0, len(motif) - analysis_size))
+            grain = motif[scan:].copy() if scan < len(motif) - 64 else motif.copy()
+            transformed = np.stack(
+                [stretch_audio(grain[:, channel], resample_factor) for channel in range(2)],
+                axis=1,
+            )
+            for channel in range(2):
+                transformed[:, channel] = structured_granulation(
+                    transformed[:, channel], "gesture", dream_level
+                )
+            if dream_level >= 3 and (step + phrase_index) % 4 == 3:
+                transformed = transformed[::-1]
+            # Non-linear colour is derived from the grain itself; it does not
+            # introduce an independent pitch or spectral signature.
+            transformed = 0.72 * transformed + 0.28 * np.tanh(transformed * 2.1) / 2.1
+            # Keep the derived phrase forward and readable when the uploaded
+            # library is bass-heavy. This shelves only the added phrase layer;
+            # the original source material and its full frequency range remain.
+            for channel in range(2):
+                phrase_low = butter_filter(transformed[:, channel], "lowpass", 170)
+                low_scale = {1: 0.38, 3: 0.48, 5: 0.58}[dream_level]
+                transformed[:, channel] += phrase_low * (low_scale - 1.0)
+            envelope = np.clip(
+                np.sin(np.linspace(0.0, np.pi, len(transformed), dtype=np.float32)),
+                0.0,
+                1.0,
+            ) ** 1.45
+            development = arpeggio_phrase_growth(
+                dream_level, (phrase_index + step / phrase_steps) / max(1, phrase_count)
+            )
+            learned_phrase_gain = 0.72 + 0.56 * np.clip(learned_energy, 0.0, 1.0)
+            transformed *= envelope[:, None] * base_amp * development * learned_phrase_gain
+            max_phrase_pan = {1: 0.72, 3: 0.86, 5: 0.96}[dream_level]
+            pan = max(
+                -max_phrase_pan,
+                min(
+                    max_phrase_pan,
+                    -max_phrase_pan + 2.0 * max_phrase_pan * step / max(1, phrase_steps - 1),
+                ),
+            )
+            # Blend a small part of the pan trajectory measured from the owned
+            # complete works. The generic traversal remains recognisable, but
+            # no longer sweeps identically in every source-derived phrase.
+            learned_pan = float(
+                ARTIST_STYLE.trajectory_curve(
+                    "pan", np.asarray([tonal_position]), dream_level, int(RENDER_SEED)
+                )[0]
+            )
+            pan_blend = {1: 0.14, 3: 0.20, 5: 0.26}[dream_level]
+            pan = float(np.clip(
+                pan
+                + np.clip(learned_pan, -1.0, 1.0) * max_phrase_pan * pan_blend,
+                -max_phrase_pan,
+                max_phrase_pan,
+            ))
+            transformed[:, 0] *= np.sqrt((1.0 - pan) / 2.0)
+            transformed[:, 1] *= np.sqrt((1.0 + pan) / 2.0)
+            destination = int((phrase_start + step * local_step_sec) * TARGET_SR)
+            if destination >= len(layer):
+                break
+            end = min(len(layer), destination + len(transformed))
+            layer[destination:end] += transformed[:end - destination]
 
+    peak = float(np.max(np.abs(layer))) + 1e-9
+    if peak > 0.22:
+        layer *= 0.22 / peak
+    return layer.astype(np.float32)
+
+
+def add_source_musical_phrases(output, dream_level, pulse_bpm=0.0):
+    """Add the source-derived musical layer without changing the dry events."""
+    source = np.asarray(output, dtype=np.float32).copy()
+    layer = source_musical_phrase_layer(
+        source,
+        dream_level,
+        pulse_bpm=pulse_bpm,
+    )
+    layer *= ARTIST_STYLE.control("phrase_presence", dream_level)
+    output += layer
     return layer
 
 
-def make_ambient_bed(output, dream_level, pulse_bpm=0.0):
-    duration = OUTPUT_DURATION
-    t = np.linspace(0, duration, OUTPUT_DURATION * TARGET_SR, endpoint=False)
-    feedback_audio = composition_feedback_audio_snapshot()
-    low_gain = np.sqrt(feedback_audio["low_frequency_gain"])
+def movement_candidate_score(event, dream_level):
+    """Score a rendered event for movement using the learned preference space."""
+    obj = event.get("object", {})
+    preference = COMPOSITION_PREFERENCE.object_factor(
+        obj.get("object_id"), obj.get("recording"), dream_level
+    )
+    affinity = 1.0 / max(0.76, float(preference))
+    features = obj.get("features", {})
+    musicality = max(0.0, min(1.0, float(features.get("musicality", 0.5) or 0.5)))
+    foreground = max(
+        float(features.get("foreground_probability", 0.0) or 0.0),
+        float(features.get("gesture_strength", 0.0) or 0.0),
+        float(features.get("transient_score", 0.0) or 0.0),
+    )
+    foreground = max(0.0, min(1.0, foreground))
+    role_gain = {
+        "gesture": 1.28,
+        "noise": 1.12,
+        "impact": 1.04,
+        "texture": 0.82,
+        "resonance": 0.74,
+    }.get(event.get("role"), 0.80)
+    embedding_bonus = 1.08 if str(obj.get("object_id", "")) in COMPOSITION_PREFERENCE.embeddings else 1.0
+    air_suitability = 0.18 if fragile_air_object(obj) else 1.0
+    vector = REPRESENTATION_ASSIST.embeddings.get(str(obj.get("object_id", "")))
+    artist_affinity = 1.0 / ARTIST_STYLE.object_factor(vector, dream_level)
+    return float(
+        affinity
+        * artist_affinity
+        * air_suitability
+        * (0.58 + 0.24 * musicality + 0.28 * foreground)
+        * role_gain
+        * embedding_bonus
+    )
 
-    # Preserve the accepted D1 render path exactly. D3 and D5 receive distinct
-    # background instruments instead of transpositions of one shared sine bed.
-    if dream_level == 1:
-        freqs = scale_frequencies(low_midi=33, high_midi=57, count=5)
-        if freqs is None:
-            freqs = [55.00, 82.41, 110.00, 164.81, 220.00]
-        amps = [0.024, 0.020, 0.016, 0.011, 0.007]
-        for freq, amp in zip(freqs, amps):
-            phase = random.random() * np.pi * 2
-            slow = 0.5 + 0.5 * np.sin(2 * np.pi * t / random.uniform(35, 80))
-            frequency_gain = low_gain if freq < 125 else 1.0
-            tone = np.sin(2 * np.pi * freq * t + phase) * amp * slow * frequency_gain
-            pan = random.uniform(-0.35, 0.35)
-            ambient_gain = learned_factor("ambient_weight", 4.0)
-            ambient_gain *= d5_temporal_profile(dream_level)["ambient_scale"]
-            add_to_output(output, tone.astype(np.float32), 0, ambient_gain, pan)
-    else:
-        rng = random.Random(RENDER_SEED + dream_level * 65537)
-        voice_count = 3 if dream_level == 3 else 4
-        freqs = scale_frequencies(low_midi=34, high_midi=58, count=voice_count)
-        if freqs is None:
-            freqs = {
-                3: [69.30, 103.83, 155.56],
-                5: [49.00, 73.42, 110.00, 164.81],
+
+def moving_pan_stereo(mono, start_pan, end_pan, motion_cycles=0.0):
+    """Place one source-derived phrase on a continuous equal-power trajectory."""
+    signal = np.asarray(mono, dtype=np.float32)
+    if len(signal) == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    progress = np.linspace(0.0, 1.0, len(signal), dtype=np.float32)
+    pan = float(start_pan) + (float(end_pan) - float(start_pan)) * progress
+    if motion_cycles:
+        pan += 0.16 * np.sin(2.0 * np.pi * float(motion_cycles) * progress)
+    pan = np.clip(pan, -0.98, 0.98)
+    left = signal * np.sqrt((1.0 - pan) * 0.5)
+    right = signal * np.sqrt((1.0 + pan) * 0.5)
+    return np.stack((left, right), axis=1).astype(np.float32)
+
+
+def artist_tonal_development(source, dream_level, position, seed):
+    """Pitch-develop a return from a learned tonal trajectory, preserving length."""
+    audio = np.asarray(source, dtype=np.float32)
+    if len(audio) < 512 or not ARTIST_STYLE.active:
+        return audio
+    tonal = float(
+        ARTIST_STYLE.trajectory_curve(
+            "tonal", np.asarray([position]), dream_level, int(seed)
+        )[0]
+    )
+    semitones = tonal * {1: 1.6, 3: 3.0, 5: 5.0}[dream_level]
+    semitones *= ARTIST_STYLE.control("tonal_development", dream_level)
+    if abs(semitones) < 0.35:
+        return audio
+    shifted = librosa.effects.pitch_shift(
+        audio,
+        sr=TARGET_SR,
+        n_steps=float(np.clip(semitones, -6.0, 6.0)),
+        res_type="soxr_hq",
+    )
+    if len(shifted) != len(audio):
+        shifted = librosa.util.fix_length(shifted, size=len(audio))
+    return np.asarray(shifted, dtype=np.float32)
+
+
+def learned_form_context(position, dream_level, section_name=None, seed=None):
+    """Measure whether a formal point calls for audible material development.
+
+    The decision follows the energy/density trajectories learned from the owned
+    works. Local motion is weighted more than absolute loudness, so a return is
+    developed at an articulation, growth or culmination point—not simply because
+    it is the next repetition. Section weights only keep openings and resolutions
+    from being overworked; they do not prescribe a fixed composition template.
+    """
+    position = float(np.clip(position, 0.0, 1.0))
+    radius = {1: 0.055, 3: 0.045, 5: 0.035}[dream_level]
+    points = np.asarray(
+        [max(0.0, position - radius), position, min(1.0, position + radius)],
+        dtype=np.float64,
+    )
+    trajectory_seed = int(RENDER_SEED if seed is None else seed)
+    energy = ARTIST_STYLE.trajectory_curve(
+        "energy", points, dream_level, trajectory_seed
+    )
+    density = ARTIST_STYLE.trajectory_curve(
+        "density", points, dream_level, trajectory_seed
+    )
+    centre = 0.55 * float(energy[1]) + 0.45 * float(density[1])
+    motion = 0.55 * abs(float(energy[2] - energy[0]))
+    motion += 0.45 * abs(float(density[2] - density[0]))
+    score = 0.46 * np.clip(centre, 0.0, 1.0) + 0.54 * np.clip(motion * 3.2, 0.0, 1.0)
+    section_scale = {
+        "opening": 0.78,
+        "activation": 1.04,
+        "complexity": 1.18,
+        "memory": 1.02,
+        "resolution": 0.74,
+    }.get(section_name, 1.0)
+    return float(np.clip(score * section_scale, 0.0, 1.0))
+
+
+def musical_evolution_moment(position, dream_level, event_index=0, section_name=None, seed=None):
+    """Gate strong transformations to sparse, learned formal moments."""
+    context = learned_form_context(position, dream_level, section_name, seed)
+    threshold = {1: 0.48, 3: 0.43, 5: 0.38}[dream_level]
+    cadence = {1: 4, 3: 3, 5: 2}[dream_level]
+    structural_slot = int(event_index) % cadence == cadence - 1
+    return bool(structural_slot and context >= threshold), context
+
+
+def electroacoustic_movement_layer(source, events, dream_level, seed=None):
+    """Develop learned-preference events into recurrent electroacoustic motion.
+
+    The layer introduces no oscillator or stock gesture. Candidate material is
+    selected in the learned embedding/preference space, then re-sampled into
+    granular, spatially moving returns. The renderer supplies the DSP grammar;
+    learned affinity, user feedback and the uploaded material decide its content
+    and strength.
+    """
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim != 2 or audio.shape[1] != 2 or len(audio) < 512 or not events:
+        return np.zeros_like(audio)
+    source_rms = float(np.sqrt(np.mean(audio * audio)))
+    if source_rms < 1e-7:
+        return np.zeros_like(audio)
+    duration_sec = len(audio) / TARGET_SR
+
+    rng = random.Random(int(RENDER_SEED if seed is None else seed) + dream_level * 961748941)
+    scored = sorted(
+        ((movement_candidate_score(event, dream_level), event) for event in events),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    # Explore within the learned high-affinity region rather than taking the
+    # exact same top event on every render.
+    pool = scored[:min(len(scored), {1: 14, 3: 20, 5: 28}[dream_level])]
+    selected = []
+    desired = min(len(pool), {1: 6, 3: 9, 5: 12}[dream_level])
+    while pool and len(selected) < desired:
+        weights = [max(1e-5, score) for score, _ in pool]
+        chosen = rng.choices(range(len(pool)), weights=weights, k=1)[0]
+        selected.append(pool.pop(chosen))
+
+    layer = np.zeros_like(audio)
+    feedback = composition_feedback_audio_snapshot()
+    musicality = learned_factor("musicality_weight", 2.6, 0.86, 1.42)
+    development = feedback["development_drive"]
+    granular = feedback["structured_granulation_drive"]
+    repeat_control = learned_factor("repetition_control", 2.2, 0.72, 1.45)
+    recurrence = ARTIST_STYLE.control("recurrence", dream_level)
+    phrase_persistence = ARTIST_STYLE.control("phrase_persistence", dream_level)
+    style_granulation = ARTIST_STYLE.control("granulation", dream_level)
+    return_count = {
+        1: 2 + int(repeat_control < 1.02),
+        3: 2 + int(repeat_control < 1.12),
+        5: 3 + int(repeat_control < 1.18),
+    }[dream_level]
+    return_count += {1: 0, 3: 1, 5: 2}[dream_level]
+    return_count = min({1: 3, 3: 4, 5: 5}[dream_level], max(2, int(round(return_count * recurrence))))
+    spatial = np.sqrt(
+        ARTIST_STYLE.control("spatial_width", dream_level)
+        * ARTIST_STYLE.control("pan_motion", dream_level)
+    )
+    max_pan = min(0.98, {1: 0.78, 3: 0.92, 5: 0.98}[dream_level] * spatial)
+
+    for candidate_index, (score, event) in enumerate(selected):
+        start_sample = max(0, min(len(audio) - 1, int(float(event["start"]) * TARGET_SR)))
+        available = max(512, min(len(audio) - start_sample, int(float(event["duration"]) * TARGET_SR)))
+        source_size = min(
+            available,
+            int(rng.uniform(1.25, {1: 3.2, 3: 2.8, 5: 2.4}[dream_level]) * TARGET_SR),
+        )
+        if source_size < 512:
+            continue
+        fragment = np.mean(audio[start_sample:start_sample + source_size], axis=1)
+        if float(np.sqrt(np.mean(fragment * fragment))) < 1e-7:
+            continue
+
+        stable_id = str(event.get("object", {}).get("object_id", ""))
+        identity_seed = sum((index + 1) * ord(char) for index, char in enumerate(stable_id))
+        local = random.Random(rng.randrange(1, 2**31 - 1) + identity_seed)
+        first_destination = max(
+            0.0,
+            min(
+                max(0.0, duration_sec - 0.05),
+                float(event["start"]) + local.uniform(-2.8, 4.8),
+            ),
+        )
+        direction = -1.0 if local.random() < 0.5 else 1.0
+
+        candidate_position = candidate_index / max(1, len(selected) - 1)
+        context = learned_form_context(
+            candidate_position,
+            dream_level,
+            "complexity" if 0.30 <= candidate_position <= 0.68 else "memory",
+            identity_seed,
+        )
+        # The learned trajectory controls compression and rarefaction. Even D5
+        # has a finite number of returns, and low-context material may appear
+        # only twice before leaving space for another phrase.
+        local_return_count = int(round(2 + context * (return_count - 2)))
+        local_return_count = max(2, min(return_count, local_return_count))
+        development_points = {local_return_count - 1}
+        if dream_level == 5 and local_return_count >= 5 and context >= 0.76:
+            development_points.add(local_return_count // 2)
+
+        for occurrence in range(local_return_count):
+            stretch = local.uniform(
+                {1: 0.62, 3: 0.54, 5: 0.46}[dream_level],
+                {1: 1.52, 3: 1.38, 5: 1.26}[dream_level],
+            ) * phrase_persistence
+            stretch *= 1.0 + 0.10 * occurrence * (development - 0.8)
+            gesture = stretch_audio(fragment.copy(), stretch)
+            trajectory_position = (
+                candidate_index + occurrence / max(1, local_return_count)
+            ) / max(1, len(selected))
+            evolution_moment = occurrence in development_points and context >= {
+                1: 0.48, 3: 0.43, 5: 0.38
             }[dream_level]
-        amps = {
-            3: [0.017, 0.012, 0.008],
-            5: [0.014, 0.011, 0.008, 0.0055],
-        }[dream_level]
-        progress = np.clip(t / max(duration, 1e-6), 0.0, 1.0)
-        broad_form = 0.22 + 0.78 * np.sin(np.pi * progress) ** 1.35
-        for index, (freq, amp) in enumerate(zip(freqs, amps)):
-            phase = rng.random() * np.pi * 2.0
-            frequency_gain = low_gain if freq < 125 else 1.0
-            if dream_level == 3:
-                slow = 0.58 + 0.42 * np.sin(
-                    2 * np.pi * t / rng.uniform(47.0, 91.0) + phase
+            if evolution_moment:
+                gesture = artist_tonal_development(
+                    gesture,
+                    dream_level,
+                    trajectory_position,
+                    identity_seed + occurrence,
                 )
-                carrier = np.sin(2 * np.pi * freq * t + phase)
-                carrier += 0.10 * np.sin(2 * np.pi * freq * 2.5 * t + phase * 0.37)
-                tone = carrier * amp * slow * broad_form * frequency_gain
-                pan = (-0.48, 0.10, 0.52)[index]
-            else:
-                beat = 60.0 / max(1.0, float(pulse_bpm or 126.0))
-                phrase_motion = 0.68 + 0.32 * np.sin(
-                    2 * np.pi * t / (beat * (12.0 + index * 4.0)) + phase
-                )
-                phase_motion = 0.12 * np.sin(
-                    2 * np.pi * t / rng.uniform(8.0, 17.0) + phase * 0.41
-                )
-                carrier = np.sin(2 * np.pi * freq * t + phase + phase_motion)
-                carrier += 0.15 * np.sin(2 * np.pi * freq * 1.5 * t + phase * 0.63)
-                tone = carrier * amp * phrase_motion * broad_form * frequency_gain
-                pan = (-0.62, 0.38, -0.22, 0.64)[index]
-            ambient_gain = learned_factor("ambient_weight", 4.0)
-            ambient_gain *= d5_temporal_profile(dream_level)["ambient_scale"]
-            add_to_output(output, tone.astype(np.float32), 0, ambient_gain, pan)
+            if evolution_moment and occurrence and local.random() < 0.34 + 0.08 * dream_level:
+                gesture = reverse_blend(gesture, amount=local.uniform(0.14, 0.38))
+            # First and intermediate returns retain the motif clearly. The
+            # developed return receives the stronger granular/spectral change.
+            if evolution_moment:
+                gesture = structured_granulation(gesture, "gesture", dream_level)
+                gesture = learned_material_evolution(gesture, "gesture", dream_level)
+            gesture_low = butter_filter(gesture, "lowpass", 190)
+            gesture += gesture_low * ({1: 0.42, 3: 0.50, 5: 0.60}[dream_level] - 1.0)
 
-    # Explicit synth presence requested by the listener. Neutral feedback adds
-    # nothing, so the Gate 1 sound remains unchanged without an explicit request.
-    synth_gain = feedback_audio["synthetic_layer_gain"]
-    synth_gain *= np.sqrt(feedback_audio["foreground_presence_gain"])
-    if synth_gain > 1e-6:
-        synth_freqs = scale_frequencies(low_midi=48, high_midi=79, count=4)
-        if synth_freqs is None:
-            synth_freqs = {
-                1: [130.81, 196.00, 261.63, 392.00],
-                3: [146.83, 220.00, 293.66, 440.00],
-                5: [110.00, 164.81, 246.94, 369.99],
-            }[dream_level]
-        form_env = 0.35 + 0.65 * np.sin(np.pi * np.clip(t / OUTPUT_DURATION, 0.0, 1.0)) ** 1.6
-        d5_evolution = d5_global_evolution_curve(len(t)) if dream_level == 5 else 1.0
-        motion_rate = 0.035 + 0.018 * feedback_audio["development_drive"]
-        for index, freq in enumerate(synth_freqs):
-            phase = random.random() * np.pi * 2
-            motion = 0.62 + 0.38 * np.sin(2 * np.pi * motion_rate * t + phase)
-            carrier = 2 * np.pi * freq * t + phase
-            if dream_level == 5:
-                # The synthetic colour changes through the piece: FM motion and
-                # upper partials follow the learned multi-stage development arc.
-                progress = np.clip(t / max(OUTPUT_DURATION, 1e-6), 0.0, 1.0)
-                fm_index = 0.08 + 0.28 * progress * feedback_audio["development_drive"]
-                tone = np.sin(carrier + fm_index * np.sin(carrier * 0.5 + phase * 0.31))
-                tone += (0.14 + 0.18 * progress) * np.sin(carrier * 2.0 + phase * 0.7)
-                tone += (0.04 + 0.10 * (1.0 - progress)) * np.sin(carrier * 3.0 + phase * 0.19)
-            else:
-                tone = np.sin(carrier)
-                tone += 0.24 * np.sin(carrier * 2.0 + phase * 0.7)
-            if dream_level == 5:
-                beat = 60.0 / max(1.0, float(pulse_bpm or 126.0))
-                phrase_pulse = 0.62 + 0.38 * np.power(
-                    0.5 + 0.5 * np.sin(2 * np.pi * t / (beat * 2.0) + phase),
-                    1.6,
-                )
-                tone *= phrase_pulse * d5_evolution
-            level_gain = 1.38 if dream_level == 5 else 1.0
-            tone *= (0.010 + 0.003 * index) * synth_gain * form_env * motion * level_gain
-            pan = (-0.62, 0.45, -0.28, 0.68)[index % 4]
-            add_to_output(output, tone.astype(np.float32), 0, 1.0, pan)
+            # Several overlapping source scans create a compact polyphonic
+            # movement. Their number follows learned granulation, not a preset.
+            effective_granular = granular * style_granulation
+            voice_count = min(
+                4,
+                1
+                + int(effective_granular > 1.10)
+                + int(effective_granular > 1.42)
+                + int(dream_level == 5),
+            )
+            movement = np.zeros(len(gesture) + int(0.55 * TARGET_SR), dtype=np.float32)
+            for voice in range(voice_count):
+                factor = 1.0 + local.uniform(-0.075, 0.095) * (voice + 1)
+                voice_audio = stretch_audio(gesture, factor)
+                offset = int(voice * local.uniform(0.07, 0.19) * TARGET_SR)
+                end = min(len(movement), offset + len(voice_audio))
+                movement[offset:end] += voice_audio[:end - offset] / np.sqrt(voice_count)
+            movement = continuity_edge_guard(movement, "gesture", dream_level)
+            peak = float(np.max(np.abs(movement))) + 1e-9
+            movement /= peak
 
-    output += synth_arpeggio_layer(dream_level, pulse_bpm=pulse_bpm)
+            pan_start = direction * max_pan * local.uniform(0.56, 1.0)
+            pan_end = -pan_start * local.uniform(0.72, 1.0)
+            pan_positions = np.asarray(
+                [trajectory_position, min(1.0, trajectory_position + 0.08)],
+                dtype=np.float64,
+            )
+            learned_pan = ARTIST_STYLE.trajectory_curve(
+                "pan", pan_positions, dream_level, identity_seed + occurrence
+            )
+            pan_blend = {1: 0.14, 3: 0.20, 5: 0.26}[dream_level]
+            pan_start = float(np.clip(
+                pan_start + float(learned_pan[0]) * max_pan * pan_blend,
+                -max_pan,
+                max_pan,
+            ))
+            pan_end = float(np.clip(
+                pan_end + float(learned_pan[1]) * max_pan * pan_blend,
+                -max_pan,
+                max_pan,
+            ))
+            stereo = moving_pan_stereo(
+                movement,
+                pan_start,
+                pan_end,
+                motion_cycles=local.uniform(
+                    {1: 0.55, 3: 0.90, 5: 1.35}[dream_level],
+                    {1: 1.05, 3: 1.60, 5: 2.30}[dream_level],
+                ) * ARTIST_STYLE.control("pan_motion", dream_level),
+            )
+            affinity_gain = max(0.78, min(1.24, float(score)))
+            gain = {1: 0.060, 3: 0.085, 5: 0.115}[dream_level]
+            gain *= ARTIST_STYLE.control("expressive_drive", dream_level)
+            gain *= affinity_gain * np.sqrt(musicality) * (1.0 + 0.10 * occurrence)
+            destination_sec = first_destination + occurrence * local.uniform(
+                {1: 10.0, 3: 7.0, 5: 4.5}[dream_level],
+                {1: 19.0, 3: 14.0, 5: 10.0}[dream_level],
+            )
+            destination = int(destination_sec * TARGET_SR)
+            if destination >= len(layer):
+                break
+            end = min(len(layer), destination + len(stereo))
+            layer[destination:end] += stereo[:end - destination] * gain
+            direction *= -1.0
+
+    layer_rms = float(np.sqrt(np.mean(layer * layer))) + 1e-9
+    target_rms = source_rms * {1: 0.22, 3: 0.32, 5: 0.44}[dream_level]
+    target_rms *= np.sqrt(musicality * max(0.85, min(1.42, development)))
+    target_rms *= ARTIST_STYLE.control("phrase_presence", dream_level)
+    if layer_rms > 1e-8:
+        layer *= min(1.85, target_rms / layer_rms)
+    peak = float(np.max(np.abs(layer))) + 1e-9
+    if peak > 0.28:
+        layer *= 0.28 / peak
+    return layer.astype(np.float32)
 
 
 
@@ -2047,47 +2599,6 @@ def smooth_tail(x, tail_sec=0.45, decay=0.45):
     out[:len(x)] += x
     out[delay:delay + len(x)] += x * decay
     return out / (np.max(np.abs(out)) + 1e-9)
-
-
-def air_resonance_layer(length, dream_level):
-    """Very quiet high-frequency air, intermittent and slowly moving."""
-    t = np.arange(length, dtype=np.float32) / TARGET_SR
-    out = np.zeros(length, dtype=np.float32)
-
-    # sparse high partials, more present in D3/D5 but still subtle
-    partials = [7200, 9300, 11800]
-    amps = [0.0028, 0.0022, 0.0016]
-    if dream_level >= 5:
-        partials += [13500]
-        amps += [0.0011]
-
-    for freq, amp in zip(partials, amps):
-        phase = random.random() * np.pi * 2
-        slow = 0.5 + 0.5 * np.sin(2 * np.pi * t / random.uniform(28, 70) + phase)
-        gate = 0.5 + 0.5 * np.sin(2 * np.pi * t / random.uniform(18, 45) + phase * 0.37)
-        gate = np.power(gate, 3.0)
-        drift = np.sin(2 * np.pi * random.uniform(0.015, 0.045) * t + phase) * random.uniform(8, 35)
-        out += np.sin(2 * np.pi * (freq + drift) * t + phase) * amp * slow * gate
-
-    return out.astype(np.float32)
-
-
-def low_resonance_pulse(length, dream_level):
-    """Warm low-end support that appears as breaths, not constant bass."""
-    t = np.arange(length, dtype=np.float32) / TARGET_SR
-    out = np.zeros(length, dtype=np.float32)
-    tonal_freqs = scale_frequencies(low_midi=29, high_midi=45, count=3)
-    base_freqs = tonal_freqs if tonal_freqs is not None else [48, 72, 96]
-    base_amp = 0.0045 if dream_level == 1 else (0.0060 if dream_level == 3 else 0.0070)
-    base_amp *= composition_feedback_audio_snapshot()["low_frequency_gain"]
-
-    for freq in base_freqs:
-        phase = random.random() * np.pi * 2
-        breath = 0.5 + 0.5 * np.sin(2 * np.pi * t / random.uniform(38, 85) + phase)
-        breath = np.power(breath, 2.5)
-        out += np.sin(2 * np.pi * freq * t + phase) * base_amp * breath
-
-    return out.astype(np.float32)
 
 
 def simple_stereo_reverb(output, wet=0.09):
@@ -2137,10 +2648,10 @@ def parallel_density_glue(output, dream_level):
     source = np.asarray(output, dtype=np.float32)
     richness = learned_factor("richness_weight", 2.5, 0.90, 1.45)
     activity = learned_factor("activity_weight", 1.8, 0.92, 1.42)
-    base_mix = {1: 0.10, 3: 0.15, 5: 0.40}[dream_level]
+    base_mix = {1: 0.24, 3: 0.34, 5: 0.50}[dream_level]
     requested = max(0.0, richness - 1.0) + 0.65 * max(0.0, activity - 1.0)
     wet = min(0.58, base_mix + 0.16 * requested)
-    drive = {1: 1.70, 3: 1.90, 5: 2.80}[dream_level]
+    drive = {1: 2.10, 3: 2.50, 5: 3.30}[dream_level]
     compressed = np.tanh(source * drive) / np.tanh(drive)
     return (source * (1.0 - wet) + compressed * wet).astype(np.float32)
 
@@ -2191,7 +2702,18 @@ def repair_isolated_discontinuities(audio, threshold=0.075, ratio=9.0):
             h10 = t**3 - 2 * t**2 + t
             h01 = -2 * t**3 + 3 * t**2
             h11 = t**3 - t**2
-            signal[left:right + 1] = h00 * y0 + h10 * slope0 + h01 * y1 + h11 * slope1
+            repaired = h00 * y0 + h10 * slope0 + h01 * y1 + h11 * slope1
+            # Cubic Hermite slopes can overshoot far beyond the actual local
+            # waveform. That artificial peak would make the delivery ceiling
+            # turn an energetic composition down. Bound only the replacement
+            # samples to the real neighbourhood; legitimate source transients
+            # outside the isolated seam remain completely untouched.
+            context_left = max(0, left - radius)
+            context_right = min(len(signal), right + radius + 1)
+            context = signal[context_left:context_right]
+            local_min = float(np.min(context))
+            local_max = float(np.max(context))
+            signal[left:right + 1] = np.clip(repaired, local_min, local_max)
             last_right = right
         work[:, channel] = signal
     return work[:, 0] if mono_input else work
@@ -2206,31 +2728,56 @@ def enforce_delivery_ceiling(output, ceiling=0.88):
     return work
 
 
+def audition_loudness_floor(output, dream_level, ceiling=0.88):
+    """Make D-level energy comparable without changing source selection.
+
+    The composition and its internal dynamics are created upstream. This final
+    bounded soft lift only prevents one isolated peak from turning an otherwise
+    active D5 render quieter than D1/D3 after peak normalisation.
+    """
+    source = np.asarray(output, dtype=np.float32)
+    rms = float(np.sqrt(np.mean(source * source))) if source.size else 0.0
+    target = {1: 0.072, 3: 0.100, 5: 0.130}[int(dream_level)]
+    if rms < 1e-8 or rms >= target:
+        return enforce_delivery_ceiling(source, ceiling)
+
+    low, high = 1.0, 16.0
+    best = source.copy()
+    for _ in range(16):
+        gain = 0.5 * (low + high)
+        candidate = np.tanh(source * gain / ceiling) * ceiling
+        candidate_rms = float(np.sqrt(np.mean(candidate * candidate)))
+        best = candidate.astype(np.float32)
+        if candidate_rms < target:
+            low = gain
+        else:
+            high = gain
+    return enforce_delivery_ceiling(best, ceiling)
+
+
 def final_mix(output, dream_level):
-    # Global ambience/resonance polish. Kept subtle: musical glue, not soup.
-    length = len(output)
-
-    air = air_resonance_layer(length, dream_level)
-    low = low_resonance_pulse(length, dream_level)
-
-    # Slightly different placement so the high air breathes in stereo.
+    # Global polish. No fixed high or low oscillator is injected: the spectral
+    # identity comes from the selected recordings and phrase-shaped synth events.
     temporal = d5_temporal_profile(dream_level)
     ambient_scale = temporal["ambient_scale"]
     if dream_level == 5:
         ambient_scale *= max(0.76, 1.0 - 0.46 * (d5_energy_drive(5) - 1.0))
-    output[:, 0] += (air * random.uniform(0.55, 0.85) + low * 0.80) * ambient_scale
-    output[:, 1] += (np.roll(air, int(0.019 * TARGET_SR)) * random.uniform(0.55, 0.85) + low * 0.82) * ambient_scale
 
     output -= np.mean(output, axis=0)
     output = apply_mix_feedback_controls(output)
+    output = adaptive_low_balance(output, dream_level)
 
     # Gentle glue reverb. A little more in D5, but still controlled.
     wet = base_reverb_wet(dream_level) * ambient_scale
     wet *= composition_feedback_audio_snapshot()["reverb_clarity_gain"]
     output = simple_stereo_reverb(output, wet=wet)
     output = parallel_density_glue(output, dream_level)
+    # Saturation and parallel glue can rebuild low dominance after the first
+    # correction, so verify the balance once more before delivery gain.
+    output = adaptive_low_balance(output, dream_level)
 
-    # Soft saturation for body, less aggressive than previous versions.
+    # Soft saturation for body; level differentiation comes from the source-
+    # derived composition layers rather than a different distortion preset.
     output = np.tanh(output * 1.14)
     output = repair_isolated_discontinuities(output)
 
@@ -2250,6 +2797,18 @@ def final_mix(output, dream_level):
 
     # A seam that was quiet before normalisation can become audible after the
     # final gain and form envelope, so verify delivery-level samples once more.
+    output = repair_isolated_discontinuities(output, threshold=0.06, ratio=8.0)
+    output = audition_loudness_floor(output, dream_level)
+    # The loudness lift can make a previously inaudible one-sample seam cross
+    # the delivery threshold, so perform one final isolated-seam check.
+    output = repair_isolated_discontinuities(output, threshold=0.06, ratio=8.0)
+    # Seam repair may lower a dense render; restore only the bounded audition
+    # floor after all discontinuity work is complete.
+    output = audition_loudness_floor(output, dream_level)
+    # The second bounded lift can expose a seam that was below the threshold by
+    # only a few hundredths. Repair only isolated one-sample discontinuities;
+    # sustained bright/transient material remains explicitly protected by the
+    # neighbourhood-ratio test in repair_isolated_discontinuities.
     output = repair_isolated_discontinuities(output, threshold=0.06, ratio=8.0)
     # Interpolation can overshoot the earlier normalisation by a few samples.
     # Re-apply the ceiling after repair so exported PCM stays below full scale.
@@ -2427,8 +2986,8 @@ def d5_internal_motion(frag, role, dream_level, section_name=None):
 
 
 def continuity_edge_guard(frag, role, dream_level):
-    """Guarantee musical D5 attacks/releases after every transformation stage."""
-    if dream_level != 5 or len(frag) < 32:
+    """Guarantee musical attacks/releases after every transformation stage."""
+    if len(frag) < 32:
         return frag.astype(np.float32)
 
     attack_sec = {
@@ -2445,7 +3004,9 @@ def continuity_edge_guard(frag, role, dream_level):
         "texture": 3.20,
         "resonance": 4.80,
     }.get(role, 1.20)
+    level_scale = {1: 0.58, 3: 0.78, 5: 1.0}[dream_level]
     smoothness = learned_factor("transition_smoothness_weight", 1.8, 0.90, 1.32)
+    smoothness *= level_scale
     attack_n = min(int(attack_sec * smoothness * TARGET_SR), len(frag) // 3)
     release_n = min(int(release_sec * smoothness * TARGET_SR), len(frag) // 2)
     if attack_n > 8:
@@ -2526,19 +3087,19 @@ def feedback_continuity_start(start, duration, role, previous_layer_end):
 
     gap = float(start) - float(previous_layer_end)
     desired_overlap = {
-        "gesture": 0.20,
-        "impact": 0.16,
-        "noise": 0.40,
-        "texture": 1.40,
-        "resonance": 2.20,
+        "gesture": 0.34,
+        "impact": 0.22,
+        "noise": 0.58,
+        "texture": 2.10,
+        "resonance": 3.10,
     }.get(role, 0.45) * request
     if gap >= 0.0:
         # Nearby phrases crossfade. Larger gaps retain breathing room but become
         # less empty, so continuity never turns into a constant wall of sound.
-        if gap <= 5.0:
+        if gap <= 7.0:
             adjusted = float(start) - min(gap + desired_overlap, max(0.25, duration * 0.22))
         else:
-            adjusted = float(start) - min(gap * 0.22 * request, 2.0)
+            adjusted = float(start) - min(gap * 0.30 * request, 3.2)
         return max(0.0, adjusted)
     return float(start)
 
@@ -2587,14 +3148,15 @@ def structured_granulation(frag, role, dream_level):
         role_scale = {1: 0.38, 3: 0.48, 5: 0.62}[dream_level]
     else:
         role_scale = {"gesture": 0.88, "texture": 1.0, "noise": 0.76}[role]
-    wet *= role_scale * {1: 0.82, 3: 0.95, 5: 1.0}[dream_level]
-    drive = snapshot["structured_granulation_drive"]
-    base_grain_ms = {1: 155.0, 3: 115.0, 5: 82.0}[dream_level]
+    style_granulation = ARTIST_STYLE.control("granulation", dream_level)
+    wet *= role_scale * {1: 0.96, 3: 1.10, 5: 1.24}[dream_level] * style_granulation
+    drive = snapshot["structured_granulation_drive"] * style_granulation
+    base_grain_ms = {1: 88.0, 3: 64.0, 5: 48.0}[dream_level]
     if role == "resonance":
         base_grain_ms *= 1.45
     grain_ms = base_grain_ms / max(1.0, 1.0 + 0.42 * (drive - 1.0))
     grain_n = max(128, min(len(frag), int(grain_ms * TARGET_SR / 1000.0)))
-    hop_scale = {1: 0.72, 3: 0.58, 5: 0.46}[dream_level]
+    hop_scale = {1: 0.48, 3: 0.40, 5: 0.32}[dream_level]
     hop_scale /= max(1.0, 1.0 + 0.22 * (drive - 1.0))
     hop_n = max(64, int(grain_n * hop_scale))
     window = np.hanning(grain_n).astype(np.float32)
@@ -2603,8 +3165,8 @@ def structured_granulation(frag, role, dream_level):
     voice_count = (
         1
         + int(wet > 0.08)
-        + int(dream_level == 5 and wet > 0.16)
-        + int(dream_level == 5 and wet > 0.48)
+        + int(dream_level >= 3 and wet > 0.16)
+        + int(dream_level == 5 and wet > 0.38)
     )
     scan_rates = (1.0, 0.82, 1.17, 0.67)
     granular = np.zeros(len(frag), dtype=np.float32)
@@ -2634,7 +3196,14 @@ def structured_granulation(frag, role, dream_level):
     # static effect. This strengthens development without adding or removing
     # composition events, so density and palette breadth stay unchanged.
     progress = np.linspace(0.0, 1.0, len(frag), dtype=np.float32)
-    evolution = 0.58 + 0.42 * np.sin(np.pi * progress / 2.0) ** 1.35
+    learned_density_curve = ARTIST_STYLE.trajectory_curve(
+        "density",
+        progress,
+        dream_level,
+        int(RENDER_SEED) + sum(ord(char) for char in role),
+    ).astype(np.float32)
+    evolution = 0.48 + 0.34 * np.sin(np.pi * progress / 2.0) ** 1.35
+    evolution += 0.36 * np.clip(learned_density_curve, 0.0, 1.0)
     local_wet = np.clip(wet * evolution, 0.0, 0.76)
     dry = np.asarray(frag, dtype=np.float32)
     mixed = dry * (1.0 - local_wet) + granular * local_wet
@@ -2676,7 +3245,7 @@ def crossfaded_circular_shift(source, shift, crossfade_sec=0.025):
 
 
 def learned_material_evolution(frag, role, dream_level):
-    """Give every D-level bounded spectral and amplitude development over time."""
+    """Apply bounded development inside an already selected formal moment."""
     source = np.asarray(frag, dtype=np.float32)
     if len(source) < 512:
         return source
@@ -2686,18 +3255,37 @@ def learned_material_evolution(frag, role, dream_level):
         return source
 
     progress = np.linspace(0.0, 1.0, len(source), dtype=np.float32)
-    cycles = {1: 1.15, 3: 1.65, 5: 2.25}[dream_level]
+    cycles = {1: 2.10, 3: 2.90, 5: 3.80}[dream_level]
     phase = {"resonance": 0.15, "texture": 0.55, "gesture": 1.10,
              "noise": 1.65, "impact": 2.10}.get(role, 0.0)
     motion = 0.5 + 0.5 * np.sin(2.0 * np.pi * cycles * progress + phase)
     depth = min(0.22, 0.055 + request * 0.34)
-    amplitude_curve = (1.0 - depth) + depth * motion
+    trajectory_seed = int(RENDER_SEED) + sum((index + 1) * ord(char) for index, char in enumerate(role))
+    learned_energy = ARTIST_STYLE.trajectory_curve(
+        "energy", progress, dream_level, trajectory_seed
+    ).astype(np.float32)
+    learned_density = ARTIST_STYLE.trajectory_curve(
+        "density", progress, dream_level, trajectory_seed
+    ).astype(np.float32)
+    learned_brightness = ARTIST_STYLE.trajectory_curve(
+        "brightness", progress, dream_level, trajectory_seed
+    ).astype(np.float32)
+    learned_shape = 0.54 + 0.56 * (
+        0.58 * np.clip(learned_energy, 0.0, 1.0)
+        + 0.42 * np.clip(learned_density, 0.0, 1.0)
+    )
+    trajectory_blend = {1: 0.48, 3: 0.70, 5: 0.90}[dream_level]
+    trajectory_blend *= min(1.0, ARTIST_STYLE.control("expressive_drive", dream_level) / 1.18)
+    generic_curve = (1.0 - depth) + depth * motion
+    amplitude_curve = generic_curve * (1.0 - trajectory_blend) + learned_shape * trajectory_blend
 
     cutoff = 1900 if role in {"texture", "resonance"} else 2700
     low = butter_filter(source, "lowpass", cutoff)
     detail = source - low
     opening_shape = np.clip(np.sin(np.pi * progress), 0.0, 1.0)
-    opening = 0.62 + 0.58 * opening_shape ** 1.45
+    generic_opening = 0.62 + 0.58 * opening_shape ** 1.45
+    learned_opening = 0.48 + 0.96 * np.clip(learned_brightness, 0.0, 1.0)
+    opening = generic_opening * (1.0 - trajectory_blend) + learned_opening * trajectory_blend
     spectral_mix = min(0.44, 0.12 + request * 0.72)
     evolved = source * (1.0 - spectral_mix) + (low + detail * opening) * spectral_mix
     evolved *= amplitude_curve
@@ -2778,7 +3366,15 @@ def composition_sustain_bloom(frag, role, dream_level):
     return output.astype(np.float32)
 
 
-def transform_fragment_for_role(frag, role, dream_level):
+def transform_fragment_for_role(
+    frag,
+    role,
+    dream_level,
+    *,
+    formal_position=None,
+    event_index=0,
+    section_name=None,
+):
     """
     Different musical functions receive different treatments.
     This prevents all layers from dissolving into the same texture.
@@ -2856,7 +3452,15 @@ def transform_fragment_for_role(frag, role, dream_level):
 
     frag = structured_granulation(frag, role, dream_level)
     frag = composition_sustain_bloom(frag, role, dream_level)
-    frag = learned_material_evolution(frag, role, dream_level)
+    if formal_position is not None:
+        should_evolve, _context = musical_evolution_moment(
+            formal_position,
+            dream_level,
+            event_index=event_index,
+            section_name=section_name,
+        )
+        if should_evolve:
+            frag = learned_material_evolution(frag, role, dream_level)
     amp *= (1 + dream_level * 0.055)
     if role == "gesture":
         amp *= learned_factor("gesture_weight", 4.0)
@@ -3013,82 +3617,480 @@ def organic_emergence(x, role, dream_level, features=None):
     return x.astype(np.float32)
 
 
+def spectral_bloom_timing(duration, dream_level, seed=None):
+    """Return a render-specific bloom window instead of one fixed 75% gesture."""
+    duration = max(0.0, float(duration))
+    if duration <= 0.0:
+        return 0.0, 0.0, 0.0
+    rng = random.Random(
+        int(RENDER_SEED if seed is None else seed) + int(dream_level) * 982451653
+    )
+    if dream_level == 1:
+        peak_ratio = rng.uniform(0.42, 0.60)
+    elif dream_level == 3:
+        peak_ratio = rng.uniform(0.38, 0.62)
+    else:
+        peak_ratio = rng.uniform(0.34, 0.68)
+    rise_ratio = rng.uniform(0.14, 0.25)
+    fall_ratio = rng.uniform(0.13, 0.27)
+    start_ratio = max(0.08, peak_ratio - rise_ratio)
+    end_ratio = min(0.94, peak_ratio + fall_ratio)
+    return duration * start_ratio, duration * peak_ratio, duration * end_ratio
+
+
+def _delayed_signal(source, samples):
+    delayed = np.zeros_like(source)
+    samples = max(0, min(int(samples), max(0, len(source) - 1)))
+    if samples == 0:
+        delayed[:] = source
+    else:
+        delayed[samples:] = source[:-samples]
+    return delayed
+
+
+def balance_development_layer_low_end(layer, dream_level):
+    """Keep source-derived beds/pads/drone blooms from stacking in the bass."""
+    work = np.asarray(layer, dtype=np.float32).copy()
+    if work.ndim != 2 or work.shape[1] != 2 or len(work) < 64:
+        return work
+    low_scale = {1: 0.34, 3: 0.44, 5: 0.54}[int(dream_level)]
+    for channel in range(2):
+        low = butter_filter(work[:, channel], "lowpass", 170)
+        work[:, channel] += low * (low_scale - 1.0)
+    return work.astype(np.float32)
+
+
+def source_derived_bed(output, dream_level, seed=None):
+    """Build a quiet granular bed from the render's selected source events.
+
+    The bed re-samples overlapping windows from the actual palette mix. It adds
+    no oscillator and does not alter or filter the dry composition. Long Hann
+    windows and overlap-add create sustained continuity without hard loop seams.
+    """
+    source = np.asarray(output, dtype=np.float32)
+    if source.ndim != 2 or source.shape[0] < 64 or source.shape[1] != 2:
+        return source.copy()
+    source_rms = float(np.sqrt(np.mean(source * source)))
+    if source_rms < 1e-7:
+        return source.copy()
+
+    length = len(source)
+    rng = random.Random(
+        int(RENDER_SEED if seed is None else seed) + int(dream_level) * 86028121
+    )
+    analysis_hop = max(64, int(0.50 * TARGET_SR))
+    analysis_size = max(128, int(1.25 * TARGET_SR))
+    mono = np.mean(source, axis=1)
+    candidates = []
+    energies = []
+    for start in range(0, max(1, length - analysis_size), analysis_hop):
+        energy = float(np.sqrt(np.mean(mono[start:start + analysis_size] ** 2)))
+        candidates.append(start)
+        energies.append(energy)
+    if not candidates or max(energies, default=0.0) < 1e-7:
+        return source.copy()
+    positive = [energy for energy in energies if energy > 1e-8]
+    floor = float(np.percentile(positive, 38.0)) if positive else 0.0
+    active_starts = [
+        start for start, energy in zip(candidates, energies) if energy >= floor
+    ] or candidates
+
+    bed = np.zeros_like(source)
+    weights = np.zeros(length, dtype=np.float32)
+    destination = 0
+    while destination < length:
+        grain_sec = rng.uniform(
+            2.2 if dream_level == 1 else 1.6,
+            4.8 if dream_level == 1 else (4.0 if dream_level == 3 else 3.4),
+        )
+        grain_size = min(length, max(256, int(grain_sec * TARGET_SR)))
+        possible = [start for start in active_starts if start + grain_size <= length]
+        source_start = rng.choice(possible or [max(0, length - grain_size)])
+        grain = source[source_start:source_start + grain_size].copy()
+        if rng.random() < {1: 0.08, 3: 0.13, 5: 0.18}[dream_level]:
+            grain = grain[::-1]
+        window = np.hanning(grain_size).astype(np.float32)
+        end = min(length, destination + grain_size)
+        size = end - destination
+        bed[destination:end] += grain[:size] * window[:size, None]
+        weights[destination:end] += window[:size]
+        hop_ratio = rng.uniform(0.30, 0.48)
+        destination += max(64, int(grain_size * hop_ratio))
+
+    active = weights > 1e-5
+    bed[active] /= weights[active, None]
+    bed[~active] = 0.0
+    # Shape only the added under-layer toward the body; the original source
+    # remains untouched and retains all of its high-frequency information.
+    for channel in range(2):
+        bed[:, channel] = butter_filter(bed[:, channel], "lowpass", 5200)
+    bed = balance_development_layer_low_end(bed, dream_level)
+    # The bed is audible only as a finite sequence of learned phrases. Its
+    # granular source can no longer sit behind the whole work like a pasted loop.
+    bed *= learned_bed_phrase_envelope(length, dream_level, seed=seed)[:, None]
+
+    bed_rms = float(np.sqrt(np.mean(bed * bed))) + 1e-9
+    target = source_rms * {1: 0.30, 3: 0.39, 5: 0.50}[dream_level]
+    target *= learned_factor("ambient_weight", 3.0, 0.76, 1.28)
+    bed *= min(1.0, target / bed_rms)
+    result = source + bed
+    source_peak = float(np.max(np.abs(source))) + 1e-9
+    result_peak = float(np.max(np.abs(result))) + 1e-9
+    if result_peak > source_peak * 1.12:
+        bed *= (source_peak * 1.12) / result_peak
+        result = source + bed
+    return result.astype(np.float32)
+
+
+def source_drone_bloom_layer(source, dream_level, seed=None):
+    """Turn sustained source events into long, breathing drone blooms."""
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim != 2 or audio.shape[1] != 2 or len(audio) < 512:
+        return np.zeros_like(audio)
+    source_rms = float(np.sqrt(np.mean(audio * audio)))
+    if source_rms < 1e-7:
+        return np.zeros_like(audio)
+
+    local_seed = int(RENDER_SEED if seed is None else seed) + 15485863
+    cloud = source_derived_bed(audio, dream_level, seed=local_seed) - audio
+    stretch = {1: 1.35, 3: 1.68, 5: 2.05}[dream_level]
+    slowed = np.stack(
+        [stretch_audio(cloud[:, channel], stretch)[:len(audio)] for channel in range(2)],
+        axis=1,
+    )
+    progress = np.linspace(0.0, 1.0, len(audio), dtype=np.float32)
+    # Multiple large blooms create arrival, expansion and release rather than
+    # one permanent drone. D5 reaches a later, stronger second flowering.
+    first = np.clip(np.sin(np.pi * progress), 0.0, 1.0) ** 1.25
+    second = np.clip(
+        np.sin(np.pi * np.clip((progress - 0.44) / 0.56, 0.0, 1.0)),
+        0.0,
+        1.0,
+    ) ** 1.45
+    envelope = np.clip(0.78 * first + {1: 0.24, 3: 0.48, 5: 0.72}[dream_level] * second, 0.0, 1.0)
+    drone = (cloud * 0.50 + slowed * 0.50) * envelope[:, None]
+    for channel in range(2):
+        body = butter_filter(drone[:, channel], "lowpass", 3100)
+        detail = drone[:, channel] - body
+        opening = 0.42 + 0.78 * np.clip(first + 0.45 * second, 0.0, 1.0)
+        drone[:, channel] = body + detail * opening
+    drone = balance_development_layer_low_end(drone, dream_level)
+
+    drone_rms = float(np.sqrt(np.mean(drone * drone))) + 1e-9
+    target = source_rms * {1: 0.30, 3: 0.42, 5: 0.56}[dream_level]
+    target *= learned_factor("material_development_weight", 2.6, 0.82, 1.36)
+    drone *= min(1.35, target / drone_rms)
+    return drone.astype(np.float32)
+
+
+def source_pad_bloom_layer(source, dream_level, seed=None):
+    """Create changing pads only from source events judged synth-like."""
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim != 2 or audio.shape[1] != 2 or len(audio) < 512:
+        return np.zeros_like(audio)
+    source_rms = float(np.sqrt(np.mean(audio * audio)))
+    if source_rms < 1e-7:
+        return np.zeros_like(audio)
+
+    local_seed = int(RENDER_SEED if seed is None else seed) + 32452843
+    cloud = source_derived_bed(audio, dream_level, seed=local_seed) - audio
+    rng = random.Random(local_seed + dream_level * 17)
+    delay_left = int(rng.uniform(0.18, 0.42) * TARGET_SR)
+    delay_right = int(rng.uniform(0.31, 0.67) * TARGET_SR)
+    pad = np.empty_like(cloud)
+    pad[:, 0] = cloud[:, 0] * 0.66 + _delayed_signal(cloud[:, 1], delay_left) * 0.34
+    pad[:, 1] = cloud[:, 1] * 0.61 + _delayed_signal(cloud[:, 0], delay_right) * 0.39
+    # Gentle source-dependent colour and evolving detail create a pad quality
+    # without a separate oscillator or a repeated preset waveform.
+    progress = np.linspace(0.0, 1.0, len(audio), dtype=np.float32)
+    learned_energy = ARTIST_STYLE.trajectory_curve(
+        "energy", progress, dream_level, local_seed
+    ).astype(np.float32)
+    learned_brightness = ARTIST_STYLE.trajectory_curve(
+        "brightness", progress, dream_level, local_seed
+    ).astype(np.float32)
+    phrase_form = learned_bed_phrase_envelope(
+        len(audio), dream_level, seed=local_seed + 97
+    )
+    evolution = 0.38 + 0.36 * learned_energy + 0.26 * learned_brightness
+    evolution *= 0.16 + 0.84 * phrase_form
+    for channel in range(2):
+        body = butter_filter(pad[:, channel], "lowpass", 4200)
+        detail = pad[:, channel] - body
+        pad[:, channel] = body + detail * (0.38 + 0.82 * evolution)
+    pad = 0.76 * pad + 0.24 * np.tanh(pad * 2.4) / 2.4
+    pad *= evolution[:, None]
+    pad = balance_development_layer_low_end(pad, dream_level)
+
+    pad_rms = float(np.sqrt(np.mean(pad * pad))) + 1e-9
+    target = source_rms * {1: 0.50, 3: 0.68, 5: 0.88}[dream_level]
+    target *= learned_factor("synthetic_material_weight", 2.8, 0.80, 1.42)
+    # Phrase shaping lowers the pad's whole-render RMS by design. Compensate
+    # inside the finite phrases instead of filling their completed gaps with a
+    # continuous layer; D5 can therefore remain the fullest level without
+    # reverting to a permanent background loop.
+    phrase_gain_cap = {1: 2.20, 3: 1.90, 5: 2.75}[dream_level]
+    pad *= min(phrase_gain_cap, target / pad_rms)
+    return pad.astype(np.float32)
+
+
+def quantize_source_frequency(frequency):
+    """Keep a detected source pitch, or gently place it in the chosen scale."""
+    try:
+        frequency = float(frequency)
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(frequency) or frequency <= 0.0:
+        return 0.0
+    if HARMONY_STATE["scale"] == "free" or HARMONY_STATE["confidence"] < 0.55:
+        return frequency
+
+    midi = 69.0 + 12.0 * np.log2(frequency / 440.0)
+    centre = int(round(midi))
+    allowed = active_pitch_classes()
+    candidates = [
+        note for note in range(centre - 6, centre + 7) if note % 12 in allowed
+    ]
+    if not candidates:
+        return frequency
+    nearest = min(candidates, key=lambda note: abs(note - midi))
+    return float(midi_to_hz(nearest))
+
+
+def source_tonal_candidates(source, count=4):
+    """Find several stable pitches in the current synth-like source material.
+
+    There is deliberately no default oscillator pitch. If the selected source
+    bus has no audible tonal evidence, the tonal bloom remains silent instead
+    of stamping the same sine signature onto every composition.
+    """
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim == 2:
+        audio = np.mean(audio, axis=1)
+    if audio.ndim != 1 or len(audio) < 512:
+        return []
+    source_rms = float(np.sqrt(np.mean(audio * audio)))
+    if source_rms < 1e-7:
+        return []
+
+    frame_size = min(len(audio), 65_536)
+    hop = max(256, frame_size // 2)
+    starts = list(range(0, max(1, len(audio) - frame_size + 1), hop)) or [0]
+    ranked = sorted(
+        starts,
+        key=lambda start: float(
+            np.sqrt(np.mean(audio[start:start + frame_size] ** 2))
+        ),
+        reverse=True,
+    )[:4]
+    window = np.hanning(frame_size).astype(np.float32)
+    spectra = []
+    for start in ranked:
+        frame = audio[start:start + frame_size]
+        if len(frame) < frame_size:
+            frame = np.pad(frame, (0, frame_size - len(frame)))
+        spectra.append(np.abs(np.fft.rfft(frame * window)))
+    spectrum = np.mean(spectra, axis=0)
+    frequencies = np.fft.rfftfreq(frame_size, 1.0 / TARGET_SR)
+    band = (frequencies >= 55.0) & (frequencies <= 1800.0)
+    local_peaks = np.flatnonzero(
+        band
+        & (spectrum >= np.roll(spectrum, 1))
+        & (spectrum > np.roll(spectrum, -1))
+    )
+    if not len(local_peaks):
+        return []
+    local_peaks = sorted(
+        local_peaks, key=lambda index: float(spectrum[index]), reverse=True
+    )
+    floor = float(np.max(spectrum[local_peaks])) * 0.035
+    candidates = []
+    for index in local_peaks:
+        if spectrum[index] < floor:
+            break
+        frequency = quantize_source_frequency(frequencies[index])
+        if frequency <= 0.0:
+            continue
+        # Drones already carry the low register. Preserve the detected pitch
+        # class but octave-lift tonal blooms into a clearer musical foreground.
+        while frequency < 165.0:
+            frequency *= 2.0
+        # Closely spaced FFT bins describe one pitch, not extra musical voices.
+        if all(max(frequency, other) / min(frequency, other) >= 1.055 for other in candidates):
+            candidates.append(float(frequency))
+        if len(candidates) >= max(1, int(count)):
+            break
+    return candidates
+
+
+def learned_tonal_bloom_layer(source, dream_level, seed=None):
+    """Add optional, source-anchored synth phrases at learned formal moments.
+
+    Sine is allowed here as a synthesis material, but never as a compulsory
+    whole-render layer. Its pitches are inferred from the selected recordings,
+    its motion follows their amplitude, and every appearance has a finite
+    arrival, body and release. This preserves synth/drone exploration without
+    recreating the recurring tinnitus-like signature rejected in listening.
+    """
+    audio = np.asarray(source, dtype=np.float32)
+    if audio.ndim != 2 or audio.shape[1] != 2 or len(audio) < 512:
+        return np.zeros_like(audio)
+    source_rms = float(np.sqrt(np.mean(audio * audio)))
+    synth_request = composition_feedback_audio_snapshot()["synthetic_layer_gain"]
+    if source_rms < 1e-7 or synth_request <= 1e-6:
+        return np.zeros_like(audio)
+
+    frequencies = source_tonal_candidates(
+        audio, count={1: 3, 3: 5, 5: 7}[dream_level]
+    )
+    if not frequencies:
+        return np.zeros_like(audio)
+
+    local_seed = int(RENDER_SEED if seed is None else seed) + 49979687
+    rng = random.Random(local_seed + dream_level * 97)
+    phrase_form = learned_bed_phrase_envelope(
+        len(audio), dream_level, seed=local_seed
+    )
+    active = phrase_form > 0.045
+    edges = np.diff(np.pad(active.astype(np.int8), (1, 1)))
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)
+    regions = [(int(start), int(end)) for start, end in zip(starts, ends) if end - start >= 256]
+    if not regions:
+        return np.zeros_like(audio)
+
+    desired = {1: 1, 3: 2, 5: 3}[dream_level]
+    ranked_regions = []
+    for start, end in regions:
+        position = ((start + end) * 0.5) / max(1, len(audio) - 1)
+        source_activity = float(np.sqrt(np.mean(audio[start:end] ** 2))) / (source_rms + 1e-9)
+        form_score = learned_form_context(position, dream_level, seed=local_seed)
+        ranked_regions.append((0.72 * form_score + 0.28 * min(1.4, source_activity), start, end))
+    selected = sorted(sorted(ranked_regions, reverse=True)[:desired], key=lambda item: item[1])
+
+    layer = np.zeros_like(audio)
+    mono_source = np.mean(audio, axis=1)
+    for phrase_index, (_, start, end) in enumerate(selected):
+        size = end - start
+        base_frequency = frequencies[(phrase_index * 2 + dream_level) % len(frequencies)]
+        partner_frequency = frequencies[(phrase_index * 2 + dream_level + 1) % len(frequencies)]
+        source_motion = np.abs(mono_source[start:end]).astype(np.float32)
+        source_motion = butter_filter(source_motion, "lowpass", 7.0)
+        source_motion -= float(np.min(source_motion))
+        source_motion /= float(np.max(source_motion)) + 1e-9
+        deviation_depth = {1: 0.0025, 3: 0.0045, 5: 0.0065}[dream_level]
+        instantaneous = base_frequency * (
+            1.0 + (source_motion - 0.5) * deviation_depth
+        )
+        phase = rng.uniform(0.0, 2.0 * np.pi) + np.cumsum(
+            2.0 * np.pi * instantaneous / TARGET_SR
+        )
+        partner_phase = rng.uniform(0.0, 2.0 * np.pi) + np.cumsum(
+            2.0 * np.pi * partner_frequency * (1.0 - 0.35 * (source_motion - 0.5) * deviation_depth)
+            / TARGET_SR
+        )
+        partial_gain = {1: 0.10, 3: 0.17, 5: 0.24}[dream_level]
+        tone = np.sin(phase) + partial_gain * np.sin(partner_phase)
+        envelope = np.power(np.clip(phrase_form[start:end], 0.0, 1.0), 1.45)
+        envelope *= 0.58 + 0.42 * source_motion
+        edge_size = min(size // 2, max(16, int(0.055 * TARGET_SR)))
+        edge = np.sin(
+            np.linspace(0.0, np.pi / 2.0, edge_size, dtype=np.float32)
+        ) ** 1.35
+        envelope[:edge_size] *= edge
+        envelope[-edge_size:] *= edge[::-1]
+        mono = (tone * envelope).astype(np.float32)
+        pan_extent = {1: 0.48, 3: 0.70, 5: 0.90}[dream_level]
+        direction = -1.0 if (phrase_index + dream_level) % 2 else 1.0
+        stereo = moving_pan_stereo(
+            mono,
+            -direction * pan_extent,
+            direction * pan_extent,
+            motion_cycles={1: 0.20, 3: 0.45, 5: 0.75}[dream_level],
+        )
+        layer[start:end] += stereo
+
+    layer_rms = float(np.sqrt(np.mean(layer * layer))) + 1e-9
+    target = source_rms * {1: 0.075, 3: 0.115, 5: 0.160}[dream_level]
+    target *= 0.70 + 0.55 * synth_request
+    layer *= min(1.0, target / layer_rms)
+    peak = float(np.max(np.abs(layer))) + 1e-9
+    peak_limit = {1: 0.075, 3: 0.105, 5: 0.140}[dream_level]
+    if peak > peak_limit:
+        layer *= peak_limit / peak
+    return layer.astype(np.float32)
+
+
 def central_spectral_bloom(output, dream_level):
-    """
-    Compositional middle bloom: a controlled flowering of mid-frequency resonance.
-    This is not random density; it creates a gradual spectral opening around the centre
-    of the form, with warm middle partials and smooth transitions in/out.
-    """
-    if dream_level < 3:
-        return output
-
+    """Create a source-derived spectral flowering with no added pure-tone signature."""
     length = len(output)
+    if length < 32:
+        return output
     t = np.arange(length, dtype=np.float32) / TARGET_SR
-
-    # Broad envelope: starts before the middle, peaks around 88s, fades naturally.
-    start_t = 42.0
-    peak_t = 88.0
-    end_t = 132.0
+    duration = length / TARGET_SR
+    start_t, peak_t, end_t = spectral_bloom_timing(duration, dream_level)
 
     env = np.zeros_like(t)
     rise = (t >= start_t) & (t < peak_t)
     fall = (t >= peak_t) & (t <= end_t)
     env[rise] = 0.5 - 0.5 * np.cos(np.pi * (t[rise] - start_t) / max(1e-6, peak_t - start_t))
     env[fall] = 0.5 + 0.5 * np.cos(np.pi * (t[fall] - peak_t) / max(1e-6, end_t - peak_t))
-    env = np.power(env, 1.35)
-
-    # Mid-frequency harmonic field. When Max provides a reliable scale,
-    # the bloom is constructed from that scale; otherwise the original field is retained.
-    freqs = scale_frequencies(low_midi=52, high_midi=99, count=10)
-    if freqs is None:
-        base_freqs = [330, 392, 494, 587, 740, 880, 1175, 1480, 1760, 2217]
-        ratio = {3: 0.982, 5: 1.018}[dream_level]
-        freqs = [freq * ratio for freq in base_freqs]
-    amps = [0.006, 0.006, 0.005, 0.005, 0.004, 0.004, 0.0032, 0.0028, 0.0024, 0.0020]
-
-    if dream_level == 5:
-        amp_scale = (
-            1.08
-            * learned_factor("bloom_weight", 5.0)
-            / np.sqrt(d5_energy_drive(5))
+    env = np.power(env, 1.18 if dream_level == 1 else 1.35)
+    if dream_level == 1:
+        # D1 needs an audible return, not a single early swell followed by
+        # disappearance. A later, quieter bloom reuses the same source colour.
+        late_start = min(0.82 * duration, peak_t + 0.14 * duration)
+        late_peak = min(0.88 * duration, late_start + 0.08 * duration)
+        late_end = min(0.96 * duration, late_peak + 0.10 * duration)
+        late = np.zeros_like(t)
+        late_rise = (t >= late_start) & (t < late_peak)
+        late_fall = (t >= late_peak) & (t <= late_end)
+        late[late_rise] = 0.5 - 0.5 * np.cos(
+            np.pi * (t[late_rise] - late_start) / max(1e-6, late_peak - late_start)
         )
-        drift_amt = 5.5
-    else:
-        amp_scale = 0.82 * learned_factor("bloom_weight", 5.0)
-        drift_amt = 3.0
+        late[late_fall] = 0.5 + 0.5 * np.cos(
+            np.pi * (t[late_fall] - late_peak) / max(1e-6, late_end - late_peak)
+        )
+        env = np.clip(env + 0.64 * late, 0.0, 1.0)
 
-    left = np.zeros(length, dtype=np.float32)
-    right = np.zeros(length, dtype=np.float32)
-
-    for i, (freq, amp) in enumerate(zip(freqs, amps)):
-        phase = random.random() * np.pi * 2
-        slow = 0.55 + 0.45 * np.sin(2 * np.pi * t / random.uniform(18, 42) + phase)
-        drift = np.sin(2 * np.pi * random.uniform(0.012, 0.040) * t + phase) * drift_amt
-        tone = np.sin(2 * np.pi * (freq + drift) * t + phase) * amp * amp_scale * env * slow
-
-        # alternating stereo spread, but keeping the bloom coherent in the centre
-        pan = np.sin(i * 1.7) * 0.55
-        stereo = pan_stereo(tone.astype(np.float32), pan)
-        left += stereo[:, 0]
-        right += stereo[:, 1]
-
-    # Soft filtered noise excitation gives the bloom a living spectral body.
-    noise = np.random.normal(0, 1, length).astype(np.float32) * (0.0018 if dream_level == 5 else 0.0010)
-    noise = butter_filter(noise, "highpass", 420)
-    noise = butter_filter(noise, "lowpass", 3400)
-    noise *= env.astype(np.float32)
-
-    output[:, 0] += left + noise * 0.55
-    output[:, 1] += right + np.roll(noise, int(0.017 * TARGET_SR)) * 0.55
+    # The halo is extracted from the selected palette already present in the
+    # composition. No fixed oscillator frequencies, pitch sweep or added noise
+    # are introduced, so each library and render retains its own spectral identity.
+    mono = np.mean(np.asarray(output, dtype=np.float32), axis=1)
+    lower = butter_filter(mono, "lowpass", 420)
+    upper = butter_filter(mono, "lowpass", 3600)
+    body = np.tanh((upper - lower) * 1.35).astype(np.float32)
+    # Restore source-derived air and articulation without a global high shelf.
+    # If the uploaded library has no high detail, this adds none; if it does,
+    # the detail opens only during the learned bloom rather than becoming a
+    # permanent whistle or tinnitus-like layer.
+    detail_upper = butter_filter(mono, "lowpass", 9000)
+    detail_lower = butter_filter(mono, "lowpass", 2400)
+    detail = np.tanh((detail_upper - detail_lower) * 1.18).astype(np.float32)
+    rng = random.Random(RENDER_SEED + dream_level * 32452843)
+    delay_a = int(rng.uniform(0.070, 0.190) * TARGET_SR)
+    delay_b = int(rng.uniform(0.160, 0.340) * TARGET_SR)
+    detail_gain = {1: 0.36, 3: 0.46, 5: 0.58}[dream_level]
+    left = body * 0.64 + _delayed_signal(body, delay_a) * 0.36
+    right = body * 0.58 + _delayed_signal(body, delay_b) * 0.42
+    left += detail_gain * _delayed_signal(detail, max(1, delay_b // 2))
+    right += detail_gain * _delayed_signal(detail, max(1, delay_a // 2))
+    wet = {1: 0.150, 3: 0.205, 5: 0.270}[dream_level]
+    wet *= ARTIST_STYLE.control("expressive_drive", dream_level)
+    wet *= learned_factor("bloom_weight", 5.0)
+    if dream_level == 5:
+        wet /= np.sqrt(d5_energy_drive(5))
+    output[:, 0] += left * env * wet
+    output[:, 1] += right * env * wet
     return output
 
 
 def generate_soundscape(dream_level):
-    global CURRENT_MATERIAL_PLAN, CURRENT_FORM_VARIANT, LEARNING_WEIGHTS, REPRESENTATION_ASSIST, COMPOSITION_PREFERENCE
+    global CURRENT_MATERIAL_PLAN, CURRENT_FORM_VARIANT, LEARNING_WEIGHTS, REPRESENTATION_ASSIST, COMPOSITION_PREFERENCE, ARTIST_STYLE
     global LEARNED_SYNTH_AFFINITY, ORIGIN_LEARNING_SNAPSHOT
     global CURRENT_LIBRARY_COVERAGE_SNAPSHOT
     CURRENT_MATERIAL_PLAN = None
-    CURRENT_FORM_VARIANT = "aesthetic_bridge" if dream_level == 5 else "baseline"
+    CURRENT_FORM_VARIANT = select_form_variant(dream_level)
 
     print("Generator revision:", GENERATOR_REVISION)
     print("Render seed:", RENDER_SEED)
@@ -3106,6 +4108,11 @@ def generate_soundscape(dream_level):
         composition_preference_path
     )
     print("Composition preference:", COMPOSITION_PREFERENCE.snapshot())
+    artist_style_path = os.environ.get(
+        "HYPNOIA_ARTIST_STYLE_PROFILE", ARTIST_STYLE_FILE or ""
+    )
+    ARTIST_STYLE = ArtistStyleAssist.from_file(artist_style_path)
+    print("Artist style:", ARTIST_STYLE.snapshot())
     pulse_bpm = random.uniform(*D5_REFERENCE_TARGETS["pulse_bpm_range"]) if dream_level == 5 else 0.0
     if dream_level == 5:
         print("Reference pulse BPM:", round(pulse_bpm, 3))
@@ -3126,16 +4133,12 @@ def generate_soundscape(dream_level):
     build_role_pools(objects)
 
     output = np.zeros((OUTPUT_DURATION * TARGET_SR, 2), dtype=np.float32)
-    make_ambient_bed(output, dream_level, pulse_bpm=pulse_bpm)
+    sustained_source_bus = np.zeros_like(output)
+    synthetic_source_bus = np.zeros_like(output)
 
-    # A simple composed form: each section has a role tendency.
-    form = [
-        ("opening", 0, 32, 0.65),
-        ("activation", 24, 62, 1.05),
-        ("complexity", 52, 102, 1.45),
-        ("memory", 90, 138, 1.05),
-        ("resolution", 125, 178, 0.75),
-    ]
+    # The learned event count and role distribution stay active, while timing
+    # moves among compatible arcs so every render is not the same five-part copy.
+    form = composed_form(dream_level)
 
     previous = None
     used = set()
@@ -3146,6 +4149,8 @@ def generate_soundscape(dream_level):
     event_durations = []
     foreground_durations = []
     event_starts = []
+    event_timeline = []
+    movement_events = []
     total_added = 0
     role_counts = {"gesture": 0, "texture": 0, "resonance": 0, "noise": 0, "impact": 0}
     role_last_end = {role: None for role in role_counts}
@@ -3173,7 +4178,7 @@ def generate_soundscape(dream_level):
             # This creates motif-like recurrence instead of unrelated new material.
             same_role_motifs = [m for m in motif_bank if m.get("role") == role]
             repeat_chance = (
-                {1: 0.25, 3: 0.26, 5: 0.22}[dream_level]
+                {1: 0.34, 3: 0.33, 5: 0.30}[dream_level]
                 * learned_factor("coherence_weight", 4.0, 0.70, 1.35)
                 * learned_factor("material_development_weight", 1.8, 0.85, 1.30)
                 / learned_factor("repetition_control", 3.0, 0.70, 1.45)
@@ -3229,7 +4234,18 @@ def generate_soundscape(dream_level):
             if frag is None:
                 continue
 
-            frag, amp = transform_fragment_for_role(frag, role, dream_level)
+            formal_position = (
+                section_start + (i / max(1, items)) * section_length
+            ) / max(1.0, OUTPUT_DURATION)
+            frag, amp = transform_fragment_for_role(
+                frag,
+                role,
+                dream_level,
+                formal_position=formal_position,
+                event_index=i,
+                section_name=section_name,
+            )
+            frag = bound_fragile_air_punctuation(frag, obj, dream_level)
             feedback_audio = composition_feedback_audio_snapshot()
             foreground_gain = feedback_audio["foreground_presence_gain"]
             if role in {"gesture", "impact"}:
@@ -3250,6 +4266,9 @@ def generate_soundscape(dream_level):
                     "resolution": 0.88,
                 }[section_name]
                 amp *= 1.0 + (section_gain - 1.0) * d5_energy_drive(dream_level)
+            # A recurring motif keeps its small articulatory variation so it
+            # remains alive. This is distinct from the strong learned spectral/
+            # tonal evolution above, which is restricted to formal moments.
             if use_motif:
                 frag = maybe_variation_transform(frag, role, dream_level)
                 amp *= random.uniform(0.82, 1.05)
@@ -3343,7 +4362,28 @@ def generate_soundscape(dream_level):
             pan = max(-0.98, min(0.98, pan))
 
             add_to_output(output, frag, start, amp, pan)
+            if role in {"texture", "resonance"}:
+                add_to_output(sustained_source_bus, frag, start, amp, pan)
+            if effective_synthetic_score(obj) >= 0.56:
+                add_to_output(synthetic_source_bus, frag, start, amp, pan)
             event_duration = len(frag) / TARGET_SR
+            event_timeline.append({
+                "recording": obj["recording"],
+                "recording_id": obj["recording_id"],
+                "object_id": obj["object_id"],
+                "role": role,
+                "section": section_name,
+                "render_start_sec": round(float(start), 6),
+                "render_end_sec": round(float(start + event_duration), 6),
+                "source_start_sec": round(float(obj.get("start", 0.0)), 6),
+                "source_end_sec": round(float(obj.get("end", 0.0)), 6),
+            })
+            movement_events.append({
+                "object": obj,
+                "role": role,
+                "start": float(start),
+                "duration": float(event_duration),
+            })
             role_last_end[role] = max(
                 role_last_end[role] or 0.0,
                 start + event_duration,
@@ -3383,7 +4423,26 @@ def generate_soundscape(dream_level):
             total_added += 1
             role_counts[role] += 1
 
+    phrase_layer = add_source_musical_phrases(
+        output,
+        dream_level,
+        pulse_bpm=pulse_bpm,
+    )
+    movement_layer = electroacoustic_movement_layer(
+        output,
+        movement_events,
+        dream_level,
+    )
+    drone_layer = source_drone_bloom_layer(sustained_source_bus, dream_level)
+    drone_layer *= ARTIST_STYLE.control("drone_presence", dream_level)
+    pad_layer = source_pad_bloom_layer(synthetic_source_bus, dream_level)
+    tonal_bloom_layer = learned_tonal_bloom_layer(synthetic_source_bus, dream_level)
+    output += movement_layer + drone_layer + pad_layer
+    output = source_derived_bed(output, dream_level)
     output = central_spectral_bloom(output, dream_level)
+    # Tonal synthesis sits above the source-derived bed and spectral bloom so
+    # it articulates the form without changing their material selection.
+    output += tonal_bloom_layer
     output = final_mix(output, dream_level)
 
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -3399,6 +4458,26 @@ def generate_soundscape(dream_level):
     current_file = os.path.join(OUTPUT_FOLDER, "current.wav")
     sf.write(current_file, output, TARGET_SR)
     frequency_stems = save_frequency_stems(output, outfile, current_file)
+    source_development = {
+        "design": "source-derived recurrent phrases, learned-preference electroacoustic movement, drones, synth-like pads and optional tonal blooms",
+        "oscillator_layers": int(np.max(np.abs(tonal_bloom_layer)) > 1e-8),
+        "oscillator_policy": "source-anchored, scale-aware, phrase-bounded and optional",
+        "sustained_bus_rms": round(float(np.sqrt(np.mean(sustained_source_bus ** 2))), 8),
+        "synthetic_bus_rms": round(float(np.sqrt(np.mean(synthetic_source_bus ** 2))), 8),
+        "phrase_layer_rms": round(float(np.sqrt(np.mean(phrase_layer ** 2))), 8),
+        "movement_layer_rms": round(float(np.sqrt(np.mean(movement_layer ** 2))), 8),
+        "movement_candidate_count": int(len(movement_events)),
+        "drone_layer_rms": round(float(np.sqrt(np.mean(drone_layer ** 2))), 8),
+        "pad_layer_rms": round(float(np.sqrt(np.mean(pad_layer ** 2))), 8),
+        "tonal_bloom_layer_rms": round(float(np.sqrt(np.mean(tonal_bloom_layer ** 2))), 8),
+        "tonal_bloom_frequencies_hz": [
+            round(value, 3)
+            for value in source_tonal_candidates(
+                synthetic_source_bus, count={1: 3, 3: 5, 5: 7}[dream_level]
+            )
+        ],
+        "artist_style": ARTIST_STYLE.snapshot(),
+    }
 
     print()
     print("Added layers:", total_added)
@@ -3441,6 +4520,8 @@ def generate_soundscape(dream_level):
         role_counts,
         temporal_metrics,
         frequency_stems,
+        event_timeline,
+        source_development,
     )
     save_sample_learning_profile(sample_profile)
 

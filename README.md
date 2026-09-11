@@ -64,9 +64,12 @@ embeddings, creates embeddings only for new/changed sound objects, and removes
 inactive embeddings without a complete retraining run.
 
 The repository includes the frozen 32-dimensional representation model, 2,566
-calibrated sound-object embeddings and the locked D1/D3/D5 gold preference head.
-The gold head guides material and structure without copying the three reference
-waveforms or banning the rest of a user's library.
+calibrated sound-object embeddings, the locked D1/D3/D5 gold preference head and
+the approved bounded artist-style baseline. The gold head guides material and
+structure without copying the three reference waveforms or banning the rest of
+a user's library. The artist baseline stores only an aggregate prototype,
+descriptors and twelve-point musical trajectories learned from five authorised
+works; no source recording is included.
 
 ## 1. Requirements
 
@@ -232,8 +235,8 @@ The path is sent before the ready trigger so Max can preload the completed WAV
 without a race condition.
 
 The complete Max → Python render → dynamic WAV path → Max playback round trip
-was verified live on 21 August 2026 while the physiological input remained on
-port `5001`.
+was verified again with the release candidate on 11 September 2026 while the
+physiological input remained independent on port `5001`.
 
 The generator's scale-aware selection remains in free mode when harmonic confidence is below `0.55`.
 
@@ -301,12 +304,30 @@ The generator combines:
 * D5-only temporal drive that shortens stretches, envelopes and delay spacing
 * role-aware internal motion that develops the selected D5 material
 * reference-derived soft pulse, phrase-lane overlap and a final continuity guard
+* source-derived granular beds built from the material selected for each render
+* separate source-derived drone, pad and motif-phrase layers with no oscillators
+* an approved bounded artist-style baseline for phrase persistence, recurrence,
+  granulation, energy/density development and spatial motion
 
 D5 activity is deliberately not interpreted as unlimited layer count. The
 reference-continuity revision organises foreground events around a soft shared
-122–129 BPM pulse, maintains overlap between related role lanes, and guarantees
-cosine-shaped attacks and releases after all other transformations. This keeps
-energy and synthetic motion while preventing abrupt, scissor-like phrase cuts.
+122–129 BPM pulse and maintains overlap between related role lanes. Every dream
+level now receives cosine-shaped attacks and releases after all other
+transformations. This keeps energy and synthetic motion while preventing abrupt,
+scissor-like phrase cuts.
+
+The background is not a permanent high- or low-frequency oscillator. Quiet beds
+are granular overlap-add re-samplings of the source events selected for that
+render. Musical foreground phrases also come from motifs cut from that material,
+then developed through scale-related resampling, stretching, granular variation,
+overlap and long windows. The dry source mix remains intact, so this change does
+not globally remove high frequencies.
+
+Sustained texture/resonance events feed a dedicated drone bus. Events whose
+features indicate synth-like material feed a separate pad bus. These buses bloom
+through different long-form curves, while a third motif layer supplies rhythmic
+and arpeggio-like source phrases. D1, D3 and D5 use increasingly active but still
+bounded forms, so intensity comes from development rather than a shared preset.
 
 The aesthetic-bridge revision uses the listener-preferred 20 August D5 as its
 primary aesthetic baseline. It restores a broader material palette, elastic
@@ -368,6 +389,16 @@ Summarises Critic variance, MAE, signed error, and rank correlation against coll
 User-defined audio memory folder.
 
 ## Research Context
+
+External listener feedback is tracked as release evidence. The first outside
+review identified a recurring narrow-band, tinnitus-like signature, a repeated
+rise/fall gesture near three quarters of the form, and insufficiently explicit
+pitch control. The generator now derives its spectral bloom from the selected
+sound library instead of adding a fixed pure-tone field, varies the bloom window
+per render, replaces the fixed low bed with a source-derived granular layer, and
+exposes root pitch with musical note names. The longer-term
+acousmatic-corpus protocol is documented in
+[`docs/ACOUSMATIC_CORPUS_PROTOCOL.md`](docs/ACOUSMATIC_CORPUS_PROTOCOL.md).
 
 Hyponoia investigates adaptive and affective approaches to computer-assisted musical composition.
 

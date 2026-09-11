@@ -41,6 +41,7 @@ phase2_artifacts/*
 !phase2_artifacts/metric_adapter_v2.pt
 !phase2_artifacts/composition_preference_gold.json
 !phase2_artifacts/learning_profile_seed.json
+!phase2_artifacts/artist_style_baseline_v1.json
 local_models/
 logs/
 install.log

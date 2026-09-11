@@ -151,33 +151,37 @@ def test_composition_feedback_reduces_low_masking_and_opens_layers(monkeypatch):
     assert snapshot["development_drive"] > 1.0
 
 
-def test_arpeggio_feedback_creates_bounded_level_specific_audio(monkeypatch):
+def test_arpeggio_feedback_creates_bounded_source_derived_phrases(monkeypatch):
     neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
-    silent = generator.synth_arpeggio_layer(3, duration=4.0)
+    rng = np.random.default_rng(7)
+    source = rng.normal(0.0, 0.08, (generator.TARGET_SR * 4, 2)).astype(np.float32)
+    silent = generator.source_musical_phrase_layer(source, 3, duration=4.0)
     assert silent.shape == (generator.TARGET_SR * 4, 2)
     assert np.count_nonzero(silent) == 0
 
     requested = dict(neutral)
     requested["arpeggio_weight"] = 1.10
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
-    d3 = generator.synth_arpeggio_layer(3, duration=40.0)
-    d5 = generator.synth_arpeggio_layer(5, pulse_bpm=126.0, duration=40.0)
+    d3 = generator.source_musical_phrase_layer(source, 3, duration=4.0)
+    d5 = generator.source_musical_phrase_layer(source, 5, pulse_bpm=126.0, duration=4.0)
     assert np.isfinite(d3).all() and np.isfinite(d5).all()
-    assert np.max(np.abs(d3)) < 0.08
-    assert np.max(np.abs(d5)) < 0.08
+    assert np.max(np.abs(d3)) <= 0.22
+    assert np.max(np.abs(d5)) <= 0.22
     assert np.count_nonzero(d3) > 0
     assert not np.array_equal(d3, d5)
 
 
-def test_arpeggio_motif_and_timbre_change_between_render_seeds(monkeypatch):
+def test_source_phrase_motif_and_transformations_change_between_render_seeds(monkeypatch):
     requested = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     requested["arpeggio_weight"] = 1.10
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", requested)
+    rng = np.random.default_rng(11)
+    source = rng.normal(0.0, 0.08, (generator.TARGET_SR * 4, 2)).astype(np.float32)
     monkeypatch.setattr(generator, "RENDER_SEED", 101)
-    first = generator.synth_arpeggio_layer(1, duration=40.0)
+    first = generator.source_musical_phrase_layer(source, 1, duration=4.0)
     monkeypatch.setattr(generator, "RENDER_SEED", 202)
-    second = generator.synth_arpeggio_layer(1, duration=40.0)
+    second = generator.source_musical_phrase_layer(source, 1, duration=4.0)
     assert not np.array_equal(first, second)
 
 
@@ -463,16 +467,243 @@ def test_instrument_and_foreground_feedback_have_audible_bounded_controls(monkey
     ) < 1.0
 
 
-def test_d3_and_d5_background_instruments_are_distinct(monkeypatch):
+def test_d3_and_d5_source_phrase_layers_are_distinct(monkeypatch):
     monkeypatch.setattr(generator, "OUTPUT_DURATION", 1)
-    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
-    d3 = np.zeros((generator.TARGET_SR, 2), dtype=np.float32)
-    d5 = np.zeros_like(d3)
-    generator.make_ambient_bed(d3, 3, pulse_bpm=96.0)
-    generator.make_ambient_bed(d5, 5, pulse_bpm=126.0)
+    weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    weights["synthetic_material_weight"] = 1.30
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
+    rng = np.random.default_rng(13)
+    source = rng.normal(0.0, 0.08, (generator.TARGET_SR, 2)).astype(np.float32)
+    d3 = generator.source_musical_phrase_layer(source, 3, pulse_bpm=96.0)
+    d5 = generator.source_musical_phrase_layer(source, 5, pulse_bpm=126.0)
     assert np.any(np.abs(d3) > 0)
     assert np.any(np.abs(d5) > 0)
     assert not np.allclose(d3, d5)
+
+
+def test_phrase_synth_voices_enter_and_leave(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    for level in (1, 3, 5):
+        envelope = generator.phrase_window_envelope(
+            generator.TARGET_SR * 20, level, voice_index=2
+        )
+        assert np.max(envelope) > 0.9
+        assert np.count_nonzero(envelope == 0.0) > generator.TARGET_SR
+
+
+def test_learned_bed_form_has_finite_phrases_and_completed_edges(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    monkeypatch.setattr(generator, "ARTIST_STYLE", generator.ArtistStyleAssist.disabled())
+    length = generator.TARGET_SR * 60
+    for level in (1, 3, 5):
+        first = generator.learned_bed_phrase_envelope(length, level, seed=22)
+        second = generator.learned_bed_phrase_envelope(length, level, seed=22)
+        assert np.array_equal(first, second)
+        assert first[0] == 0.0
+        assert first[-1] == 0.0
+        assert np.max(first) > 0.70
+        # A background phrase must actually leave before another one returns;
+        # it cannot become one whole-render loop or periodic LFO.
+        assert np.count_nonzero(first < 1e-5) > int(length * 0.03)
+
+
+def test_source_derived_bed_is_silent_without_source_and_depends_on_source(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    silent = np.zeros((generator.TARGET_SR * 2, 2), dtype=np.float32)
+    assert np.array_equal(generator.source_derived_bed(silent, 3), silent)
+
+    time = np.arange(generator.TARGET_SR * 2, dtype=np.float32) / generator.TARGET_SR
+    source_a = np.stack([
+        0.1 * np.sin(2 * np.pi * 180.0 * time),
+        0.1 * np.sin(2 * np.pi * 270.0 * time),
+    ], axis=1).astype(np.float32)
+    source_b = np.stack([
+        0.1 * np.sin(2 * np.pi * 620.0 * time),
+        0.1 * np.sin(2 * np.pi * 930.0 * time),
+    ], axis=1).astype(np.float32)
+    bed_a = generator.source_derived_bed(source_a, 3, seed=22) - source_a
+    bed_b = generator.source_derived_bed(source_b, 3, seed=22) - source_b
+    assert np.max(np.abs(bed_a)) > 0.0
+    assert np.max(np.abs(bed_b)) > 0.0
+    assert not np.allclose(bed_a, bed_b)
+
+
+def test_source_drones_and_pads_require_and_follow_source_audio(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 303)
+    weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    weights.update({
+        "synthetic_material_weight": 1.30,
+        "material_development_weight": 1.20,
+    })
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
+    silent = np.zeros((generator.TARGET_SR * 2, 2), dtype=np.float32)
+    assert np.array_equal(generator.source_drone_bloom_layer(silent, 5), silent)
+    assert np.array_equal(generator.source_pad_bloom_layer(silent, 5), silent)
+
+    rng = np.random.default_rng(19)
+    source_a = rng.normal(0.0, 0.07, silent.shape).astype(np.float32)
+    source_b = np.roll(source_a, generator.TARGET_SR // 3, axis=0)
+    drone_a = generator.source_drone_bloom_layer(source_a, 5, seed=91)
+    drone_b = generator.source_drone_bloom_layer(source_b, 5, seed=91)
+    pad = generator.source_pad_bloom_layer(source_a, 5, seed=91)
+    assert np.max(np.abs(drone_a)) > 0.0
+    assert np.max(np.abs(pad)) > 0.0
+    assert not np.allclose(drone_a, drone_b)
+
+
+def test_source_tonal_candidates_follow_the_source_and_active_scale(monkeypatch):
+    monkeypatch.setitem(generator.HARMONY_STATE, "root", 0)
+    monkeypatch.setitem(generator.HARMONY_STATE, "scale", "minor")
+    monkeypatch.setitem(generator.HARMONY_STATE, "confidence", 0.8)
+    time = np.arange(generator.TARGET_SR * 3, dtype=np.float32) / generator.TARGET_SR
+    first_mono = (
+        0.14 * np.sin(2.0 * np.pi * 220.0 * time)
+        + 0.06 * np.sin(2.0 * np.pi * 330.0 * time)
+    ).astype(np.float32)
+    second_mono = (
+        0.14 * np.sin(2.0 * np.pi * 510.0 * time)
+        + 0.06 * np.sin(2.0 * np.pi * 765.0 * time)
+    ).astype(np.float32)
+    first = generator.source_tonal_candidates(np.stack((first_mono, first_mono), axis=1), count=4)
+    second = generator.source_tonal_candidates(np.stack((second_mono, second_mono), axis=1), count=4)
+    assert first
+    assert second
+    assert first != second
+    for frequency in first + second:
+        midi = int(round(69.0 + 12.0 * np.log2(frequency / 440.0)))
+        assert midi % 12 in generator.active_pitch_classes()
+
+
+def test_tonal_bloom_is_optional_source_anchored_and_phrase_bounded(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 303)
+    monkeypatch.setattr(generator, "ARTIST_STYLE", generator.ArtistStyleAssist.disabled())
+    silent = np.zeros((generator.TARGET_SR * 12, 2), dtype=np.float32)
+    assert np.array_equal(generator.learned_tonal_bloom_layer(silent, 5), silent)
+
+    neutral = dict(generator.DEFAULT_LEARNING_WEIGHTS)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", neutral)
+    time = np.arange(len(silent), dtype=np.float32) / generator.TARGET_SR
+    first_mono = (
+        0.12 * np.sin(2.0 * np.pi * 173.0 * time)
+        + 0.05 * np.sin(2.0 * np.pi * 317.0 * time)
+    ).astype(np.float32)
+    first_source = np.stack((first_mono, np.roll(first_mono, 37)), axis=1)
+    assert np.array_equal(
+        generator.learned_tonal_bloom_layer(first_source, 5, seed=91), silent
+    )
+
+    preferred = dict(neutral)
+    preferred["synthetic_material_weight"] = 1.30
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", preferred)
+    second_mono = (
+        0.12 * np.sin(2.0 * np.pi * 431.0 * time)
+        + 0.05 * np.sin(2.0 * np.pi * 683.0 * time)
+    ).astype(np.float32)
+    second_source = np.stack((second_mono, np.roll(second_mono, 53)), axis=1)
+    first = generator.learned_tonal_bloom_layer(first_source, 5, seed=91)
+    second = generator.learned_tonal_bloom_layer(second_source, 5, seed=91)
+    assert np.max(np.abs(first)) > 0.0
+    assert np.max(np.abs(first)) <= 0.140001
+    assert np.allclose(first[0], 0.0)
+    assert np.allclose(first[-1], 0.0)
+    assert np.count_nonzero(np.max(np.abs(first), axis=1) < 1e-7) > int(len(first) * 0.03)
+    assert not np.allclose(first, second)
+
+
+def test_continuity_guard_closes_event_edges_for_every_dream_level(monkeypatch):
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    source = np.ones(generator.TARGET_SR * 2, dtype=np.float32)
+    for level in (1, 3, 5):
+        guarded = generator.continuity_edge_guard(source.copy(), "texture", level)
+        assert guarded[0] == 0.0
+        assert guarded[-1] == 0.0
+        assert guarded[1] < guarded[generator.TARGET_SR]
+        assert guarded[-2] < guarded[-generator.TARGET_SR]
+
+
+def test_spectral_bloom_adds_no_fixed_tone_to_silence(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    silent = np.zeros((generator.TARGET_SR, 2), dtype=np.float32)
+    assert np.array_equal(generator.central_spectral_bloom(silent.copy(), 3), silent)
+    assert np.array_equal(generator.central_spectral_bloom(silent.copy(), 5), silent)
+
+
+def test_spectral_bloom_is_source_derived_and_timing_varies_by_render(monkeypatch):
+    sample_rate = generator.TARGET_SR
+    time = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate
+    source_a = np.stack([
+        0.1 * np.sin(2 * np.pi * 700.0 * time),
+        0.1 * np.sin(2 * np.pi * 920.0 * time),
+    ], axis=1).astype(np.float32)
+    source_b = np.stack([
+        0.1 * np.sin(2 * np.pi * 1180.0 * time),
+        0.1 * np.sin(2 * np.pi * 1430.0 * time),
+    ], axis=1).astype(np.float32)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    monkeypatch.setattr(generator, "RENDER_SEED", 101)
+    bloomed_a = generator.central_spectral_bloom(source_a.copy(), 3)
+    bloomed_b = generator.central_spectral_bloom(source_b.copy(), 3)
+    assert not np.array_equal(bloomed_a - source_a, bloomed_b - source_b)
+
+    timing_a = generator.spectral_bloom_timing(180.0, 5, seed=101)
+    timing_b = generator.spectral_bloom_timing(180.0, 5, seed=202)
+    assert timing_a != timing_b
+    assert 0.0 < timing_a[0] < timing_a[1] < timing_a[2] < 180.0
+    assert 0.0 < timing_b[0] < timing_b[1] < timing_b[2] < 180.0
+
+
+def test_final_mix_does_not_inject_a_fixed_high_frequency_layer(monkeypatch):
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    silent = np.zeros((generator.TARGET_SR * 40, 2), dtype=np.float32)
+    for level in (1, 3, 5):
+        mixed = generator.final_mix(silent.copy(), level)
+        assert np.array_equal(mixed, silent)
+
+
+def test_adaptive_low_balance_only_reduces_severe_bass_dominance():
+    sample_rate = generator.TARGET_SR
+    time = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate
+    bass_heavy = np.stack([
+        0.40 * np.sin(2 * np.pi * 70.0 * time) + 0.04 * np.sin(2 * np.pi * 900.0 * time),
+        0.38 * np.sin(2 * np.pi * 82.0 * time) + 0.04 * np.sin(2 * np.pi * 1100.0 * time),
+    ], axis=1).astype(np.float32)
+    balanced = np.stack([
+        0.06 * np.sin(2 * np.pi * 70.0 * time) + 0.20 * np.sin(2 * np.pi * 900.0 * time),
+        0.06 * np.sin(2 * np.pi * 82.0 * time) + 0.20 * np.sin(2 * np.pi * 1100.0 * time),
+    ], axis=1).astype(np.float32)
+
+    corrected = generator.adaptive_low_balance(bass_heavy, 1)
+    untouched = generator.adaptive_low_balance(balanced, 1)
+    assert np.sqrt(np.mean(corrected * corrected)) < np.sqrt(np.mean(bass_heavy * bass_heavy))
+    assert np.allclose(untouched, balanced, atol=2e-4)
+
+
+def test_form_selection_varies_by_render_and_separates_dream_levels(monkeypatch):
+    names = [generator.select_form_variant(level, seed=811_337) for level in (1, 3, 5)]
+    assert len(set(names)) == 3
+    assert generator.select_form_variant(1, seed=811_337) != generator.select_form_variant(1, seed=812_334)
+    form = generator.composed_form(3, duration=180.0, seed=811_337)
+    assert [section[0] for section in form] == [
+        "opening", "activation", "complexity", "memory", "resolution"
+    ]
+    assert form[0][1] == 0.0
+    assert 176.0 <= form[-1][2] <= 180.0
+
+
+def test_d1_spectral_bloom_returns_and_remains_source_derived(monkeypatch):
+    monkeypatch.setattr(generator, "RENDER_SEED", 403)
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    sample_rate = generator.TARGET_SR
+    time = np.arange(sample_rate * 8, dtype=np.float32) / sample_rate
+    source = np.stack([
+        0.08 * np.sin(2 * np.pi * 620.0 * time),
+        0.08 * np.sin(2 * np.pi * 910.0 * time),
+    ], axis=1).astype(np.float32)
+    bloomed = generator.central_spectral_bloom(source.copy(), 1)
+    assert not np.array_equal(bloomed, source)
+    late = bloomed[int(len(bloomed) * 0.74):] - source[int(len(source) * 0.74):]
+    assert np.max(np.abs(late)) > 0.0
 
 
 def test_positive_structure_controls_total_density_without_equalising_levels(monkeypatch):
@@ -614,6 +845,8 @@ def test_declick_repairs_an_isolated_step_but_preserves_bright_oscillation():
     repaired = generator.repair_isolated_discontinuities(stepped)
     assert len(repaired) == len(stepped)
     assert np.max(np.abs(np.diff(repaired))) < np.max(np.abs(np.diff(stepped))) * 0.35
+    assert np.max(repaired) <= np.max(stepped) + 1e-7
+    assert np.min(repaired) >= np.min(stepped) - 1e-7
 
     bright = np.sin(np.linspace(0.0, 8_000.0, 24_000)).astype(np.float32) * 0.35
     untouched = generator.repair_isolated_discontinuities(bright)
@@ -626,6 +859,18 @@ def test_delivery_ceiling_prevents_post_repair_full_scale_samples():
     assert limited.shape == output.shape
     assert np.max(np.abs(limited)) <= 0.880001
     assert np.allclose(generator.enforce_delivery_ceiling(output * 0.5), output * 0.5)
+
+
+def test_audition_loudness_floor_is_ordered_and_silent_safe():
+    rng = np.random.default_rng(918)
+    source = rng.normal(0.0, 0.012, (generator.TARGET_SR, 2)).astype(np.float32)
+    rms = {}
+    for level in (1, 3, 5):
+        lifted = generator.audition_loudness_floor(source, level)
+        rms[level] = float(np.sqrt(np.mean(lifted * lifted)))
+        assert np.max(np.abs(lifted)) <= 0.88 + 1e-6
+    assert rms[1] < rms[3] < rms[5]
+    assert np.count_nonzero(generator.audition_loudness_floor(np.zeros_like(source), 5)) == 0
 
 
 def test_density_glue_makes_d5_fullest_without_changing_shape(monkeypatch):
@@ -656,6 +901,33 @@ def test_learned_evolution_changes_all_levels_without_losing_length_or_peak(monk
         assert len(evolved) == len(source)
         assert not np.array_equal(evolved, source)
         assert np.max(np.abs(evolved)) <= np.max(np.abs(source)) * 1.081
+
+
+def test_strong_evolution_is_sparse_and_requires_learned_form_context(monkeypatch):
+    class HighContextStyle:
+        active = True
+
+        @staticmethod
+        def trajectory_curve(_name, positions, _dream_level, _seed):
+            return np.full_like(np.asarray(positions, dtype=np.float64), 0.90)
+
+    class LowContextStyle(HighContextStyle):
+        @staticmethod
+        def trajectory_curve(_name, positions, _dream_level, _seed):
+            return np.full_like(np.asarray(positions, dtype=np.float64), 0.10)
+
+    monkeypatch.setattr(generator, "ARTIST_STYLE", HighContextStyle())
+    # D5 can develop every second structural event at most, never every event.
+    first, _ = generator.musical_evolution_moment(0.5, 5, 0, "complexity", 17)
+    second, _ = generator.musical_evolution_moment(0.5, 5, 1, "complexity", 17)
+    assert first is False
+    assert second is True
+
+    # A cadence slot is not enough on its own: the learned trajectory must also
+    # indicate meaningful growth, articulation or culmination at that point.
+    monkeypatch.setattr(generator, "ARTIST_STYLE", LowContextStyle())
+    quiet_slot, _ = generator.musical_evolution_moment(0.5, 5, 1, "complexity", 17)
+    assert quiet_slot is False
 
 
 def test_material_plans_are_not_nested_between_d_levels(monkeypatch):
@@ -737,14 +1009,17 @@ def test_d5_reference_grid_and_lane_continuity_are_soft_not_hard():
     assert generator.d5_continuity_start(8.0, 2.0, "gesture", 3.0, 3, 126.0) == 8.0
 
 
-def test_d5_edge_guard_prevents_scissor_cuts_without_touching_d3(monkeypatch):
+def test_edge_guard_prevents_scissor_cuts_at_every_level(monkeypatch):
     weights = dict(generator.DEFAULT_LEARNING_WEIGHTS)
     weights["transition_smoothness_weight"] = 1.20
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
     fragment = np.ones(96_000, dtype=np.float32)
-    unchanged = generator.continuity_edge_guard(fragment.copy(), "gesture", 3)
+    guarded_d3 = generator.continuity_edge_guard(fragment.copy(), "gesture", 3)
     guarded = generator.continuity_edge_guard(fragment.copy(), "gesture", 5)
-    assert np.array_equal(unchanged, fragment)
+    assert guarded_d3[0] == 0.0
+    assert guarded_d3[-1] == 0.0
+    assert 0.0 < guarded_d3[2_000] < 1.0
+    assert 0.0 < guarded_d3[-2_000] < 1.0
     assert guarded[0] == 0.0
     assert guarded[-1] == 0.0
     assert 0.0 < guarded[2_000] < 1.0
@@ -756,6 +1031,117 @@ def test_d5_activity_is_bounded_to_avoid_layer_confetti(monkeypatch):
     weights["activity_weight"] = 1.8
     monkeypatch.setattr(generator, "LEARNING_WEIGHTS", weights)
     assert generator.dream_activity_multiplier(5) <= 1.23
+
+
+def test_moving_pan_stereo_preserves_signal_and_reaches_wider_d5_space():
+    mono = np.ones(48_000, dtype=np.float32) * 0.2
+    narrow = generator.moving_pan_stereo(mono, -0.46, 0.46)
+    wide = generator.moving_pan_stereo(mono, -0.96, 0.96)
+
+    assert narrow.shape == wide.shape == (48_000, 2)
+    assert np.isfinite(narrow).all() and np.isfinite(wide).all()
+    assert np.allclose(np.sum(narrow * narrow, axis=1), mono * mono, atol=2e-6)
+    assert np.allclose(np.sum(wide * wide, axis=1), mono * mono, atol=2e-6)
+    assert abs(float(wide[0, 0] - wide[0, 1])) > abs(float(narrow[0, 0] - narrow[0, 1]))
+
+
+def test_electroacoustic_movement_is_source_derived_and_silence_safe(monkeypatch):
+    class NeutralPreference:
+        embeddings = {}
+
+        @staticmethod
+        def object_factor(_object_id, _recording, _dream_level):
+            return 1.0
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", NeutralPreference())
+    monkeypatch.setattr(generator, "LEARNING_WEIGHTS", dict(generator.DEFAULT_LEARNING_WEIGHTS))
+    event = {
+        "object": {
+            "object_id": "source-object",
+            "recording": "source.wav",
+            "features": {
+                "musicality": 0.8,
+                "foreground_probability": 0.7,
+                "gesture_strength": 0.75,
+            },
+        },
+        "role": "gesture",
+        "start": 0.1,
+        "duration": 1.8,
+    }
+    silence = np.zeros((3 * generator.TARGET_SR, 2), dtype=np.float32)
+    assert np.array_equal(
+        generator.electroacoustic_movement_layer(silence, [event], 5, seed=41),
+        silence,
+    )
+
+    first_mono = _sine(generator.TARGET_SR, 3.0, frequency=173.0, amplitude=0.18)
+    second_mono = _sine(generator.TARGET_SR, 3.0, frequency=317.0, amplitude=0.18)
+    first = np.stack([first_mono, first_mono], axis=1)
+    second = np.stack([second_mono, second_mono], axis=1)
+    first_layer = generator.electroacoustic_movement_layer(first, [event], 5, seed=41)
+    second_layer = generator.electroacoustic_movement_layer(second, [event], 5, seed=41)
+
+    assert first_layer.shape == second_layer.shape == first.shape
+    assert np.isfinite(first_layer).all() and np.isfinite(second_layer).all()
+    assert np.max(np.abs(first_layer)) <= 0.280001
+    assert np.max(np.abs(first_layer)) > 0.0
+    assert not np.allclose(first_layer, second_layer)
+
+
+def test_movement_candidates_follow_learned_preference_affinity(monkeypatch):
+    class LearnedPreference:
+        embeddings = {"favoured": np.ones(4), "other": np.ones(4)}
+
+        @staticmethod
+        def object_factor(object_id, _recording, _dream_level):
+            return 0.76 if object_id == "favoured" else 1.28
+
+    monkeypatch.setattr(generator, "COMPOSITION_PREFERENCE", LearnedPreference())
+
+    def event(object_id):
+        return {
+            "object": {
+                "object_id": object_id,
+                "recording": f"{object_id}.wav",
+                "features": {"musicality": 0.75, "gesture_strength": 0.70},
+            },
+            "role": "gesture",
+            "start": 0.0,
+            "duration": 2.0,
+        }
+
+    assert generator.movement_candidate_score(event("favoured"), 5) > generator.movement_candidate_score(
+        event("other"), 5
+    )
+
+
+def test_fragile_air_remains_available_but_cannot_become_a_long_bed():
+    bright_musical = {
+        "features": {
+            "energy": 0.03,
+            "brightness": 12_000.0,
+            "zero_crossing_rate": 0.31,
+            "musicality": 0.72,
+        }
+    }
+    fragile = {
+        "features": {
+            "energy": 0.00001,
+            "brightness": 12_000.0,
+            "zero_crossing_rate": 0.32,
+            "musicality": 0.15,
+        }
+    }
+    assert not generator.fragile_air_object(bright_musical)
+    assert generator.fragile_air_object(fragile)
+
+    source = np.ones(12 * generator.TARGET_SR, dtype=np.float32)
+    untouched = generator.bound_fragile_air_punctuation(source, bright_musical, 1)
+    bounded = generator.bound_fragile_air_punctuation(source, fragile, 1)
+    assert len(untouched) == len(source)
+    assert len(bounded) == int(3.2 * generator.TARGET_SR)
+    assert bounded[0] == 0.0 and bounded[-1] == 0.0
 
 
 def test_material_plan_limits_are_balanced(monkeypatch):

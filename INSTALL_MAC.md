@@ -49,7 +49,12 @@ python3 --version
 
 Use Python 3.10, 3.11, or 3.12 for this pinned baseline. If Terminal reports another version or says that Python is missing, stop before continuing.
 
-## 3. Create the isolated environment
+## 3. Create the isolated environment manually (developers)
+
+The downloaded macOS release should normally be installed with
+`Install Hyponoia.command`. The commands below are for developers working from
+a complete GitHub checkout, which also contains the test suite and development
+requirements.
 
 ```bash
 cd ~/Desktop/hyponoia-generative-composer
@@ -67,7 +72,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the current release branch: `185 passed`.
+Expected result for the current release branch: `213 passed`.
 
 ## 5. Transfer personal Hyponoia data
 

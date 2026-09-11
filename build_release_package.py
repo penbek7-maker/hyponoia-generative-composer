@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 
-DEFAULT_VERSION = "2.0.0-rc1"
+DEFAULT_VERSION = "2.0.0-rc2"
 RUNTIME_JSON = {"alpha_profile.json", "representation_config.json", "library_source_labels.json"}
 RUNTIME_REQUIREMENTS = {
     "requirements.txt",
@@ -20,6 +20,7 @@ RUNTIME_REQUIREMENTS = {
 }
 RUNTIME_PYTHON = {
     "adaptive_composition_preference_v1.py",
+    "artist_style_v1.py",
     "composition_feedback_v1.py",
     "composition_influence_v1.py",
     "composition_preference_v1.py",
@@ -132,6 +133,9 @@ def build_release(
             "version": version,
             "git_commit": commit,
             "max_project_included": max_included,
+            "artist_style_baseline_included": (
+                engine / "phase2_artifacts" / "artist_style_baseline_v1.json"
+            ).is_file(),
             "personal_data_included": False,
             "installation": "Double-click Install Hyponoia.command once, then Open Hyponoia.command",
         }
