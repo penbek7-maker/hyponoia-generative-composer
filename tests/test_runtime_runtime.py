@@ -8,6 +8,7 @@ from hyponoia_app import ROOT_NOTE_PITCHES, format_runtime_summary
 from hyponoia_runtime import (
     PROJECT_DIR,
     generator_command,
+    latest_composition_path,
     load_user_config,
     runtime_status,
     update_user_config,
@@ -70,6 +71,24 @@ def test_generator_command_is_safe_and_uses_current_python(tmp_path):
     ]
     with pytest.raises(ValueError):
         generator_command(2, project_dir=tmp_path)
+
+
+def test_latest_composition_uses_unique_master_and_ignores_legacy_current(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "current.wav").write_bytes(b"legacy")
+    first = output / "Hyponoia_D1_20260918_100000.wav"
+    latest = output / "Hyponoia_D3_20260918_110000.wav"
+    stem = output / "Hyponoia_D3_20260918_110000_HIGH.wav"
+    first.write_bytes(b"first")
+    latest.write_bytes(b"latest")
+    stem.write_bytes(b"stem")
+
+    first.touch()
+    latest.touch()
+    stem.touch()
+
+    assert latest_composition_path(tmp_path) == latest
 
 
 def test_user_config_update_keeps_paths_portable(tmp_path):

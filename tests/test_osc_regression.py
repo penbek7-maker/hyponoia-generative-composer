@@ -65,7 +65,7 @@ def test_render_sends_path_before_ready_to_prevent_max_preload_race(monkeypatch)
     assert messages[-1] == ("/generator/busy", 0)
 
 
-def test_latest_wav_prefers_master_and_never_selects_a_frequency_stem(tmp_path, monkeypatch):
+def test_latest_wav_uses_unique_master_and_never_selects_a_frequency_stem(tmp_path, monkeypatch):
     timestamped = tmp_path / "Hyponoia_D1_test.wav"
     high = tmp_path / "Hyponoia_D1_test_HIGH.wav"
     timestamped.write_bytes(b"master")
@@ -75,7 +75,7 @@ def test_latest_wav_prefers_master_and_never_selects_a_frequency_stem(tmp_path, 
 
     current = tmp_path / "current.wav"
     current.write_bytes(b"current master")
-    assert generator_receiver.latest_wav() == str(current)
+    assert generator_receiver.latest_wav() == str(timestamped)
 
 
 def test_render_announces_available_frequency_stems_before_ready(monkeypatch):

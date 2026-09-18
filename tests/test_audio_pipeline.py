@@ -78,7 +78,7 @@ def test_frequency_stems_reconstruct_the_master_and_separate_bands():
     assert np.allclose(low + mid + high, stereo, atol=2e-6)
 
 
-def test_frequency_stems_are_saved_for_timestamped_and_current_outputs(tmp_path):
+def test_frequency_stems_are_saved_once_with_the_unique_master_name(tmp_path):
     samples = generator.TARGET_SR // 10
     time = np.arange(samples, dtype=np.float32) / generator.TARGET_SR
     master = np.stack([
@@ -86,17 +86,16 @@ def test_frequency_stems_are_saved_for_timestamped_and_current_outputs(tmp_path)
         0.2 * np.sin(2 * np.pi * 1200.0 * time),
     ], axis=1).astype(np.float32)
     outfile = tmp_path / "Hyponoia_D1_test.wav"
-    current = tmp_path / "current.wav"
+    metadata = generator.save_frequency_stems(master, str(outfile))
 
-    metadata = generator.save_frequency_stems(master, str(outfile), str(current))
-
-    paths = list(metadata["timestamped"].values()) + list(metadata["current"].values())
+    paths = list(metadata["timestamped"].values())
     assert all((tmp_path / path.split("/")[-1]).exists() for path in paths)
+    assert metadata["current"] == {}
     assert metadata["low_crossover_hz"] == 250
     assert metadata["high_crossover_hz"] == 4000
-    low, _ = sf.read(metadata["current"]["low"], dtype="float32")
-    mid, _ = sf.read(metadata["current"]["mid"], dtype="float32")
-    high, _ = sf.read(metadata["current"]["high"], dtype="float32")
+    low, _ = sf.read(metadata["timestamped"]["low"], dtype="float32")
+    mid, _ = sf.read(metadata["timestamped"]["mid"], dtype="float32")
+    high, _ = sf.read(metadata["timestamped"]["high"], dtype="float32")
     assert np.allclose(low + mid + high, master, atol=2e-6)
 
 
