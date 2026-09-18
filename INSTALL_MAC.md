@@ -72,7 +72,7 @@ When the environment is active, Terminal shows `(.venv)` at the beginning of the
 python -m pytest -q
 ```
 
-Expected result for the current release branch: `213 passed`.
+Expected result for the current release branch: `214 passed`.
 
 ## 5. Transfer personal Hyponoia data
 
@@ -126,7 +126,7 @@ C minor D5 render with confident harmonic guidance:
 python generator_v3_memory_bloom_smooth.py 5 0 minor 0.85
 ```
 
-The three-minute stereo 48 kHz result is saved in `output/`. The most recent version is also `output/current.wav`.
+The three-minute stereo 48 kHz result is saved in `output/` with a unique timestamped filename. The **Listen** button always opens the newest completed master.
 
 ## 9. Run the Critic
 

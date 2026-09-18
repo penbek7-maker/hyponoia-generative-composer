@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 
-DEFAULT_VERSION = "2.0.0-rc3"
+DEFAULT_VERSION = "2.0.0"
 RUNTIME_JSON = {"alpha_profile.json", "representation_config.json", "library_source_labels.json"}
 RUNTIME_REQUIREMENTS = {
     "requirements.txt",

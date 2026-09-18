@@ -87,7 +87,7 @@ UI_TEXT = {
         "voice_failed": "Δεν άλλαξε τίποτα. Μπορείς να ξαναδοκιμάσεις ή να γράψεις το σχόλιο.",
         "ready": "Έτοιμο για έλεγχο. Αν συμφωνείς, πάτησε ‘Εφάρμοσε το feedback’.",
         "no_change": "Δεν έγινε καμία αλλαγή. Δοκίμασε πιο συγκεκριμένη διατύπωση.",
-        "saved": "Το feedback αποθηκεύτηκε για {levels}. Η επόμενη σύνθεση θα χρησιμοποιήσει τη νέα μάθηση.",
+        "saved": "Το feedback αποθηκεύτηκε για {levels}. Θα ενημερώσει την επόμενη σύνθεση.",
         "export": "Εξαγωγή learning backup",
         "reset": "Επιστροφή στην αρχική βάση",
         "context_ready": "Κατανόηση συμφραζομένων: ΕΝΕΡΓΗ — τοπικό {model}",
@@ -116,7 +116,7 @@ UI_TEXT = {
         "voice_failed": "Nothing changed. You can try again or type your comment.",
         "ready": "Ready to review. If this is correct, press ‘Apply feedback’.",
         "no_change": "No change was proposed. Try a more specific description.",
-        "saved": "Feedback was saved for {levels}. The next composition will use the updated learning.",
+        "saved": "Feedback was saved for {levels}. It will inform the next composition.",
         "export": "Export learning backup",
         "reset": "Return to release baseline",
         "context_ready": "Context understanding: ON — local {model}",
@@ -368,8 +368,15 @@ class FeedbackApp:
 
         self.comment_label = ttk.Label(frame, text=UI_TEXT["el"]["comment"])
         self.comment_label.pack(anchor="w", pady=(7, 3))
-        self.comment = tk.Text(frame, height=3, wrap="word")
-        self.comment.pack(fill="x")
+        comment_box = ttk.Frame(frame)
+        comment_box.pack(fill="x")
+        self.comment = tk.Text(comment_box, height=4, wrap="word")
+        comment_scrollbar = ttk.Scrollbar(
+            comment_box, orient="vertical", command=self.comment.yview
+        )
+        self.comment.configure(yscrollcommand=comment_scrollbar.set)
+        self.comment.pack(side="left", fill="x", expand=True)
+        comment_scrollbar.pack(side="right", fill="y")
         self.comment.bind("<KeyRelease>", lambda _event: self._invalidate())
 
         buttons = ttk.Frame(frame)
@@ -385,8 +392,15 @@ class FeedbackApp:
         self.apply_button.pack(side="left", padx=(10, 0))
 
         ttk.Label(frame, textvariable=self.status, wraplength=700, justify="left").pack(anchor="w")
-        self.details = tk.Text(frame, height=9, wrap="word", state="disabled")
-        self.details.pack(fill="both", expand=True, pady=(7, 0))
+        details_box = ttk.Frame(frame)
+        details_box.pack(fill="both", expand=True, pady=(7, 0))
+        self.details = tk.Text(details_box, height=9, wrap="word", state="disabled")
+        details_scrollbar = ttk.Scrollbar(
+            details_box, orient="vertical", command=self.details.yview
+        )
+        self.details.configure(yscrollcommand=details_scrollbar.set)
+        self.details.pack(side="left", fill="both", expand=True)
+        details_scrollbar.pack(side="right", fill="y")
         learning_actions = ttk.Frame(frame)
         learning_actions.pack(fill="x", pady=(7, 0))
         self.export_button = ttk.Button(

@@ -37,7 +37,7 @@ downloadable musical tool:
 - **Max/MSP:** the optional live-performance project is kept separately in the
   [Hyponoia Max/MSP repository](https://github.com/penbek7-maker/hyponoia-maxmsp).
 
-The final pre-release checks are tracked in the
+The release checks are tracked in the
 **[release checklist](docs/RELEASE_CHECKLIST.md)**.
 
 ## What Hyponoia does
@@ -73,7 +73,7 @@ works; no source recording is included.
 
 ## 1. Requirements
 
-* Python 3.10 or newer
+* Python 3.10, 3.11 or 3.12
 * Max/MSP for real-time OSC control
 * WAV audio samples
 
@@ -183,9 +183,9 @@ Generated audio is stored inside:
 
 `output/`
 
-The latest render is also available as:
-
-`output/current.wav`
+Every master has a unique timestamped filename. This prevents macOS from
+reusing a cached preview of an older composition. The **Listen** button always
+opens the newest completed master.
 
 Each generation also saves three remix-ready, complementary 32-bit float WAVs:
 `LOW` (below 250 Hz), `MID` (250 Hz–4 kHz), and `HIGH` (above 4 kHz).
@@ -219,13 +219,13 @@ Python sends messages back to Max/MSP on port `7402`.
 
 Returned OSC messages are:
 
-`/generator/path /absolute/path/to/current.wav`
+`/generator/path /absolute/path/to/Hyponoia_..._TIMESTAMP.wav`
 
-`/generator/path/low /absolute/path/to/current_LOW.wav`
+`/generator/path/low /absolute/path/to/Hyponoia_..._TIMESTAMP_LOW.wav`
 
-`/generator/path/mid /absolute/path/to/current_MID.wav`
+`/generator/path/mid /absolute/path/to/Hyponoia_..._TIMESTAMP_MID.wav`
 
-`/generator/path/high /absolute/path/to/current_HIGH.wav`
+`/generator/path/high /absolute/path/to/Hyponoia_..._TIMESTAMP_HIGH.wav`
 
 `/generator/ready 1`
 

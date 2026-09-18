@@ -31,12 +31,10 @@ HARMONY_STATE = {
 
 
 def latest_wav():
-    current = os.path.join(OUTPUT_FOLDER, "current.wav")
-    if os.path.exists(current):
-        return current
     wavs = [
         path for path in glob.glob(os.path.join(OUTPUT_FOLDER, "*.wav"))
         if not os.path.splitext(path)[0].endswith(("_LOW", "_MID", "_HIGH"))
+        and os.path.basename(path) != "current.wav"
     ]
     if not wavs:
         return None

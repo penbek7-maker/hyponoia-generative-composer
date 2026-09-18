@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from hyponoia_feedback_app import FeedbackApp
-from hyponoia_runtime import PROJECT_DIR, generator_command, runtime_status
+from hyponoia_runtime import PROJECT_DIR, generator_command, latest_composition_path, runtime_status
 from max_live_v1 import MaxLiveController, find_max_project
 from update_library_v1 import update_library
 
@@ -260,6 +260,8 @@ class HyponoiaApp:
     def _scroll_feedback(self, event) -> None:
         if self.notebook.select() != str(self.feedback_tab) or not event.delta:
             return
+        if isinstance(event.widget, tk.Text):
+            return
         self.feedback_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
     def _build_live(self, tab: ttk.Frame) -> None:
@@ -463,8 +465,8 @@ class HyponoiaApp:
                 self._toggle_render_details()
 
     def listen(self) -> None:
-        path = PROJECT_DIR / "output" / "current.wav"
-        if not path.exists():
+        path = latest_composition_path(PROJECT_DIR)
+        if path is None:
             messagebox.showinfo("No composition yet", "Generate a composition first.")
             return
         subprocess.Popen(["open", str(path)])
@@ -483,7 +485,7 @@ class HyponoiaApp:
         if learning.get("updated"):
             messagebox.showinfo(
                 "Hyponoia learned",
-                "Your ratings and comment were saved. Create again to hear the new preference.",
+                "Your ratings and comment were saved. They will inform the next composition.",
             )
             self.notebook.select(self.compose_tab)
 

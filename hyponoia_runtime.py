@@ -16,6 +16,20 @@ from representation_assist_v1 import RepresentationAssist
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
+def latest_composition_path(project_dir: str | Path = PROJECT_DIR) -> Path | None:
+    """Return the newest uniquely named master render, never a frequency stem."""
+    output = Path(project_dir).resolve() / "output"
+    if not output.is_dir():
+        return None
+    masters = [
+        path
+        for path in output.glob("*.wav")
+        if not path.stem.endswith(("_LOW", "_MID", "_HIGH"))
+        and path.name != "current.wav"
+    ]
+    return max(masters, key=lambda path: path.stat().st_mtime) if masters else None
+
+
 def _resolve(project_dir: Path, value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (project_dir / path).resolve()
@@ -90,7 +104,7 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
         else 0
     )
     source_audio_ready = source_wav_count > 0
-    current_audio = root / "output" / "current.wav"
+    latest_audio = latest_composition_path(root)
     return {
         "project_dir": str(root),
         "memory_path": str(memory_path),
@@ -104,8 +118,8 @@ def runtime_status(project_dir: str | Path = PROJECT_DIR) -> dict[str, Any]:
         "representation": representation.snapshot(),
         "composition_preference": preference.snapshot(),
         "preference_review_count": preference_reviews,
-        "current_audio": str(current_audio),
-        "current_audio_ready": current_audio.exists(),
+        "latest_audio": str(latest_audio) if latest_audio is not None else "",
+        "latest_audio_ready": latest_audio is not None,
         "ready_to_generate": (
             recordings > 0
             and sound_objects > 0

@@ -1886,21 +1886,21 @@ def split_frequency_stems(
     return low, mid, high
 
 
-def save_frequency_stems(output, outfile, current_file):
+def save_frequency_stems(output, outfile, current_file=None):
     """Save remix-ready complementary stems; the master files remain untouched."""
     low, mid, high = split_frequency_stems(output)
     timestamp_base = os.path.splitext(outfile)[0]
-    current_base = os.path.splitext(current_file)[0]
     timestamped = {}
     current = {}
     for label, audio in (("LOW", low), ("MID", mid), ("HIGH", high)):
         timestamped_path = f"{timestamp_base}_{label}.wav"
-        current_path = f"{current_base}_{label}.wav"
         # Float WAV preserves headroom and lets the three stems reconstruct the master.
         sf.write(timestamped_path, audio, TARGET_SR, subtype="FLOAT")
-        sf.write(current_path, audio, TARGET_SR, subtype="FLOAT")
         timestamped[label.lower()] = timestamped_path
-        current[label.lower()] = current_path
+        if current_file:
+            current_path = f"{os.path.splitext(current_file)[0]}_{label}.wav"
+            sf.write(current_path, audio, TARGET_SR, subtype="FLOAT")
+            current[label.lower()] = current_path
     return {
         "low_crossover_hz": STEM_LOW_CROSSOVER_HZ,
         "high_crossover_hz": STEM_HIGH_CROSSOVER_HZ,
@@ -4455,9 +4455,7 @@ def generate_soundscape(dream_level):
 
     sf.write(outfile, output, TARGET_SR)
 
-    current_file = os.path.join(OUTPUT_FOLDER, "current.wav")
-    sf.write(current_file, output, TARGET_SR)
-    frequency_stems = save_frequency_stems(output, outfile, current_file)
+    frequency_stems = save_frequency_stems(output, outfile)
     source_development = {
         "design": "source-derived recurrent phrases, learned-preference electroacoustic movement, drones, synth-like pads and optional tonal blooms",
         "oscillator_layers": int(np.max(np.abs(tonal_bloom_layer)) > 1e-8),
@@ -4525,8 +4523,8 @@ def generate_soundscape(dream_level):
     )
     save_sample_learning_profile(sample_profile)
 
-    print("Current:")
-    print(current_file)
+    print("Latest composition:")
+    print(outfile)
     print("Frequency stems (LOW / MID / HIGH):")
     for path in frequency_stems["timestamped"].values():
         print(path)
