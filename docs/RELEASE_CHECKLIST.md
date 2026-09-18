@@ -2,7 +2,7 @@
 
 ## Automated gate
 
-- [x] Complete Python test suite: 213 passed
+- [x] Complete Python test suite: 214 passed
 - [x] Release ZIP excludes personal audio and learning data
 - [x] Release ZIP excludes developer-only dependencies and utilities
 - [x] Contextual Greek/English feedback has a labelled fallback
@@ -19,10 +19,13 @@
 - [x] Close and reopen Hyponoia and confirm that personal learning persists
 - [ ] Test voice transcription and spoken read-back
 - [x] Complete the Max request → render → returned path → playback round trip
+- [x] Use unique render filenames so macOS never reuses a stale `current.wav` preview
+- [x] Add independent scrolling to the written comment and interpretation fields
+- [x] Clarify that saved feedback informs the next composition
 
 ## Publication gate
 
-- [ ] Build the final macOS ZIP from the tested commit
+- [x] Build the final macOS ZIP from the tested commit
 - [ ] Install the ZIP as a clean user
 - [ ] Confirm the README download link and installation instructions
 - [ ] Publish the release asset and checksum
